@@ -71,11 +71,13 @@ public class Burst {
 
 	public static void main(String[] args) throws Exception {
 		parseArgs(args);
-		HttpClient.Version version = baseUrl.startsWith("https") ? HttpClient.Version.HTTP_2
-				: HttpClient.Version.HTTP_1_1;
+		// HTTP/1.1 everywhere: one connection per in-flight request, like many separate buyers. Over
+		// HTTP/2 the JDK client multiplexes everything onto one connection and fails requests outright
+		// ("too many concurrent streams") once the server's per-connection stream limit is reached.
 		client = HttpClient.newBuilder()
-			.version(version)
-			.connectTimeout(Duration.ofSeconds(10))
+			.version(HttpClient.Version.HTTP_1_1)
+			// Generous: opening hundreds of TLS connections at once to a remote edge takes a while.
+			.connectTimeout(Duration.ofSeconds(30))
 			.executor(Executors.newVirtualThreadPerTaskExecutor())
 			.build();
 		inFlight = new Semaphore(concurrency);
@@ -463,10 +465,25 @@ public class Burst {
 		}
 	}
 
+	/** Token minting is setup, not the test: it runs at a gentler pace and retries transport errors. */
+	static final Semaphore mintSlots = new Semaphore(100);
+
 	static String mint(String userId, String role) {
 		Map<String, String> headers = "ADMIN".equals(role) ? Map.of("X-Admin-Key", adminKey) : Map.of();
-		Res res = send("POST", "/auth/token", null,
-				"{\"user_id\":\"" + userId + "\",\"role\":\"" + role + "\"}", headers);
+		String body = "{\"user_id\":\"" + userId + "\",\"role\":\"" + role + "\"}";
+		Res res = null;
+		for (int attempt = 1; attempt <= 3; attempt++) {
+			mintSlots.acquireUninterruptibly();
+			try {
+				res = sendDirect("POST", "/auth/token", null, body, headers);
+			}
+			finally {
+				mintSlots.release();
+			}
+			if (res.status >= 0) {
+				break;
+			}
+		}
 		if (res.status != 200) {
 			System.err.println("Could not mint a " + role + " token: " + res.status + " " + res.body);
 			if ("ADMIN".equals(role)) {

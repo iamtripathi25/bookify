@@ -302,6 +302,14 @@ The dashboard has three rows:
 
 Use the **Show** selector at the top to focus on one show. Prometheus scrapes every 5 seconds.
 
+**Watching a deployed instance.** The local stack can also scrape a deployment:
+
+```bash
+observability/watch-live.sh https://<live-url>     # start; --off to stop
+```
+
+Then pick **Environment = live** at the top of the dashboard. The metrics panels switch to the deployed service. The Logs row always shows the local stack; for the deployed service's logs, use Railway's log view (service → Deploy Logs).
+
 ### Logs
 
 Every log line is one JSON object. Each request gets an id: send `X-Request-Id` to set it, or one is generated. It comes back in the `X-Request-Id` response header and in every error body. Each request writes one access-log line:

@@ -59,6 +59,7 @@ services:
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./observability/live:/etc/prometheus/live:ro
 
   loki:
     image: grafana/loki:3.5.3

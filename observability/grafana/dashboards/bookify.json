@@ -6,7 +6,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 41,
-  "version": 6,
+  "version": 11,
   "refresh": "5s",
   "time": {
     "from": "now-15m",
@@ -77,7 +77,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(abs(sum by (show) (bookify_seats{show=~\"$show\"}) - on (show) bookify_show_seats{show=~\"$show\"})) or vector(0)",
+          "expr": "max(abs(sum by (show) (bookify_seats{env=\"$env\",show=~\"$show\"}) - on (show) bookify_show_seats{env=\"$env\",show=~\"$show\"})) or vector(0)",
           "legendFormat": ""
         }
       ]
@@ -129,7 +129,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum((max_over_time(bookify_reservations_confirmed_total{show=~\"$show\"}[$__range]) - ((bookify_reservations_confirmed_total{show=~\"$show\"} offset $__range) or (max_over_time(bookify_reservations_confirmed_total{show=~\"$show\"}[$__range]) * 0))))) or vector(0)",
+          "expr": "round(sum((max_over_time(bookify_reservations_confirmed_total{env=\"$env\",show=~\"$show\"}[$__range]) - ((bookify_reservations_confirmed_total{env=\"$env\",show=~\"$show\"} offset $__range) or (max_over_time(bookify_reservations_confirmed_total{env=\"$env\",show=~\"$show\"}[$__range]) * 0))))) or vector(0)",
           "legendFormat": ""
         }
       ]
@@ -181,7 +181,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum((max_over_time(bookify_reservations_declined_total{show=~\"$show\",reason!=\"idempotent_replay\"}[$__range]) - ((bookify_reservations_declined_total{show=~\"$show\",reason!=\"idempotent_replay\"} offset $__range) or (max_over_time(bookify_reservations_declined_total{show=~\"$show\",reason!=\"idempotent_replay\"}[$__range]) * 0))))) or vector(0)",
+          "expr": "round(sum((max_over_time(bookify_reservations_declined_total{env=\"$env\",show=~\"$show\",reason!=\"idempotent_replay\"}[$__range]) - ((bookify_reservations_declined_total{env=\"$env\",show=~\"$show\",reason!=\"idempotent_replay\"} offset $__range) or (max_over_time(bookify_reservations_declined_total{env=\"$env\",show=~\"$show\",reason!=\"idempotent_replay\"}[$__range]) * 0))))) or vector(0)",
           "legendFormat": ""
         }
       ]
@@ -233,7 +233,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum((max_over_time(bookify_reservations_replayed_total{show=~\"$show\"}[$__range]) - ((bookify_reservations_replayed_total{show=~\"$show\"} offset $__range) or (max_over_time(bookify_reservations_replayed_total{show=~\"$show\"}[$__range]) * 0))))) or vector(0)",
+          "expr": "round(sum((max_over_time(bookify_reservations_replayed_total{env=\"$env\",show=~\"$show\"}[$__range]) - ((bookify_reservations_replayed_total{env=\"$env\",show=~\"$show\"} offset $__range) or (max_over_time(bookify_reservations_replayed_total{env=\"$env\",show=~\"$show\"}[$__range]) * 0))))) or vector(0)",
           "legendFormat": ""
         }
       ]
@@ -289,7 +289,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum((max_over_time(bookify_reservations_declined_total{show=~\"$show\",reason=\"contention\"}[$__range]) - ((bookify_reservations_declined_total{show=~\"$show\",reason=\"contention\"} offset $__range) or (max_over_time(bookify_reservations_declined_total{show=~\"$show\",reason=\"contention\"}[$__range]) * 0))))) or vector(0)",
+          "expr": "round(sum((max_over_time(bookify_reservations_declined_total{env=\"$env\",show=~\"$show\",reason=\"contention\"}[$__range]) - ((bookify_reservations_declined_total{env=\"$env\",show=~\"$show\",reason=\"contention\"} offset $__range) or (max_over_time(bookify_reservations_declined_total{env=\"$env\",show=~\"$show\",reason=\"contention\"}[$__range]) * 0))))) or vector(0)",
           "legendFormat": ""
         }
       ]
@@ -475,7 +475,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(bookify_reservations_confirmed_total{show=~\"$show\"}[$__rate_interval]))",
+          "expr": "sum(rate(bookify_reservations_confirmed_total{env=\"$env\",show=~\"$show\"}[$__rate_interval]))",
           "legendFormat": "confirmed reservations"
         },
         {
@@ -484,7 +484,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (reason) (rate(bookify_reservations_declined_total{show=~\"$show\"}[$__rate_interval]))",
+          "expr": "sum by (reason) (rate(bookify_reservations_declined_total{env=\"$env\",show=~\"$show\"}[$__rate_interval]))",
           "legendFormat": "{{reason}}"
         }
       ]
@@ -670,7 +670,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (status) (bookify_seats{show=~\"$show\"})",
+          "expr": "sum by (status) (bookify_seats{env=\"$env\",show=~\"$show\"})",
           "legendFormat": "{{status}}"
         }
       ]
@@ -717,7 +717,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum by (reason) ((max_over_time(bookify_reservations_declined_total{show=~\"$show\"}[$__range]) - ((bookify_reservations_declined_total{show=~\"$show\"} offset $__range) or (max_over_time(bookify_reservations_declined_total{show=~\"$show\"}[$__range]) * 0)))))",
+          "expr": "round(sum by (reason) ((max_over_time(bookify_reservations_declined_total{env=\"$env\",show=~\"$show\"}[$__range]) - ((bookify_reservations_declined_total{env=\"$env\",show=~\"$show\"} offset $__range) or (max_over_time(bookify_reservations_declined_total{env=\"$env\",show=~\"$show\"}[$__range]) * 0)))))",
           "legendFormat": "{{reason}}"
         }
       ],
@@ -787,7 +787,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum((max_over_time(http_server_requests_seconds_count{status=~\"5..\"}[$__range]) - ((http_server_requests_seconds_count{status=~\"5..\"} offset $__range) or (max_over_time(http_server_requests_seconds_count{status=~\"5..\"}[$__range]) * 0))))) or vector(0)"
+          "expr": "round(sum((max_over_time(http_server_requests_seconds_count{env=\"$env\",status=~\"5..\"}[$__range]) - ((http_server_requests_seconds_count{env=\"$env\",status=~\"5..\"} offset $__range) or (max_over_time(http_server_requests_seconds_count{env=\"$env\",status=~\"5..\"}[$__range]) * 0))))) or vector(0)"
         }
       ]
     },
@@ -838,7 +838,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum((max_over_time(http_server_requests_seconds_count{uri=\"/shows/{showId}/reserve\"}[$__range]) - ((http_server_requests_seconds_count{uri=\"/shows/{showId}/reserve\"} offset $__range) or (max_over_time(http_server_requests_seconds_count{uri=\"/shows/{showId}/reserve\"}[$__range]) * 0))))) or vector(0)"
+          "expr": "round(sum((max_over_time(http_server_requests_seconds_count{env=\"$env\",uri=\"/shows/{showId}/reserve\"}[$__range]) - ((http_server_requests_seconds_count{env=\"$env\",uri=\"/shows/{showId}/reserve\"} offset $__range) or (max_over_time(http_server_requests_seconds_count{env=\"$env\",uri=\"/shows/{showId}/reserve\"}[$__range]) * 0))))) or vector(0)"
         }
       ]
     },
@@ -896,15 +896,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (increase(http_server_requests_seconds_bucket{uri=\"/shows/{showId}/reserve\"}[$__range])))"
+          "expr": "histogram_quantile(0.99, sum by (le) (increase(http_server_requests_seconds_bucket{env=\"$env\",uri=\"/shows/{showId}/reserve\"}[$__range])))"
         }
       ]
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Peak pending DB connections",
-      "description": "Highest number of requests waiting for a pool connection in the range. Sustained queueing means the pool is undersized.",
+      "title": "Peak DB queue",
+      "description": "Most requests waiting at once for one of the 30 pool connections in the range. A high peak during a burst is expected: requests queue instead of failing. Read it with the mean wait next to it; only sustained queueing is a problem (DbPoolQueueing alert, 5 minutes).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -912,12 +912,64 @@
       "gridPos": {
         "x": 18,
         "y": 16,
-        "w": 6,
+        "w": 3,
         "h": 4
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max_over_time(hikaricp_connections_pending{env=\"$env\",pool=\"main\"}[$__range])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Mean DB wait",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Average time a request waited for a pool connection in the range. This says whether queueing hurts; the pool gives up after 60s (409 CONTENTION).",
+      "gridPos": {
+        "x": 21,
+        "y": 16,
+        "w": 3,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -927,11 +979,11 @@
               },
               {
                 "color": "orange",
-                "value": 1
+                "value": 500
               },
               {
                 "color": "red",
-                "value": 100
+                "value": 5000
               }
             ]
           }
@@ -945,7 +997,7 @@
           ]
         },
         "colorMode": "background",
-        "graphMode": "area"
+        "graphMode": "none"
       },
       "targets": [
         {
@@ -954,7 +1006,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(max_over_time(hikaricp_connections_pending{pool=\"main\"}[$__range])) or vector(0)"
+          "expr": "1000 * sum(increase(hikaricp_connections_acquire_seconds_sum{env=\"$env\",pool=\"main\"}[$__range])) / sum(increase(hikaricp_connections_acquire_seconds_count{env=\"$env\",pool=\"main\"}[$__range]))"
         }
       ]
     },
@@ -1049,7 +1101,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (status) (rate(http_server_requests_seconds_count{uri=\"/shows/{showId}/reserve\"}[$__rate_interval]))",
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count{env=\"$env\",uri=\"/shows/{showId}/reserve\"}[$__rate_interval]))",
           "legendFormat": "{{status}}"
         }
       ]
@@ -1099,7 +1151,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (method, uri) (rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[$__rate_interval]))",
+          "expr": "sum by (method, uri) (rate(http_server_requests_seconds_count{env=\"$env\",uri!~\"/actuator.*\"}[$__rate_interval]))",
           "legendFormat": "{{method}} {{uri}}"
         }
       ]
@@ -1162,7 +1214,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_requests_seconds_bucket{uri=\"/shows/{showId}/reserve\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_requests_seconds_bucket{env=\"$env\",uri=\"/shows/{showId}/reserve\"}[$__rate_interval])))",
           "legendFormat": "p50"
         },
         {
@@ -1171,7 +1223,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{uri=\"/shows/{showId}/reserve\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{env=\"$env\",uri=\"/shows/{showId}/reserve\"}[$__rate_interval])))",
           "legendFormat": "p95"
         },
         {
@@ -1180,7 +1232,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{uri=\"/shows/{showId}/reserve\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{env=\"$env\",uri=\"/shows/{showId}/reserve\"}[$__rate_interval])))",
           "legendFormat": "p99"
         }
       ]
@@ -1230,7 +1282,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le, method, uri) (rate(http_server_requests_seconds_bucket{uri!~\"/actuator.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, method, uri) (rate(http_server_requests_seconds_bucket{env=\"$env\",uri!~\"/actuator.*\"}[$__rate_interval])))",
           "legendFormat": "{{method}} {{uri}}"
         }
       ]
@@ -1334,7 +1386,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hikaricp_connections_active{pool=\"main\"}",
+          "expr": "hikaricp_connections_active{env=\"$env\",pool=\"main\"}",
           "legendFormat": "active"
         },
         {
@@ -1343,7 +1395,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hikaricp_connections_idle{pool=\"main\"}",
+          "expr": "hikaricp_connections_idle{env=\"$env\",pool=\"main\"}",
           "legendFormat": "idle"
         },
         {
@@ -1352,7 +1404,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hikaricp_connections_pending{pool=\"main\"}",
+          "expr": "hikaricp_connections_pending{env=\"$env\",pool=\"main\"}",
           "legendFormat": "pending (waiting)"
         },
         {
@@ -1361,7 +1413,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hikaricp_connections_max{pool=\"main\"}",
+          "expr": "hikaricp_connections_max{env=\"$env\",pool=\"main\"}",
           "legendFormat": "max"
         }
       ]
@@ -1411,7 +1463,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(hikaricp_connections_acquire_seconds_bucket{pool=\"main\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(hikaricp_connections_acquire_seconds_bucket{env=\"$env\",pool=\"main\"}[$__rate_interval])))",
           "legendFormat": "p99 acquire"
         },
         {
@@ -1420,7 +1472,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(hikaricp_connections_acquire_seconds_sum{pool=\"main\"}[$__rate_interval]) / rate(hikaricp_connections_acquire_seconds_count{pool=\"main\"}[$__rate_interval])",
+          "expr": "rate(hikaricp_connections_acquire_seconds_sum{env=\"$env\",pool=\"main\"}[$__rate_interval]) / rate(hikaricp_connections_acquire_seconds_count{env=\"$env\",pool=\"main\"}[$__rate_interval])",
           "legendFormat": "mean acquire"
         }
       ]
@@ -1470,7 +1522,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})",
+          "expr": "sum(jvm_memory_used_bytes{env=\"$env\",area=\"heap\"})",
           "legendFormat": "used"
         },
         {
@@ -1479,7 +1531,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jvm_memory_max_bytes{area=\"heap\"})",
+          "expr": "sum(jvm_memory_max_bytes{env=\"$env\",area=\"heap\"})",
           "legendFormat": "max"
         }
       ]
@@ -1487,7 +1539,7 @@
     {
       "id": 300,
       "type": "row",
-      "title": "Logs",
+      "title": "Logs (local stack only; live logs are in Railway)",
       "gridPos": {
         "x": 0,
         "y": 49,
@@ -1614,6 +1666,29 @@
   "templating": {
     "list": [
       {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(up{job=~\"bookify.*\"}, env)",
+          "refId": "env"
+        },
+        "definition": "label_values(up{job=~\"bookify.*\"}, env)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "current": {
+          "selected": true,
+          "text": "local",
+          "value": "local"
+        },
+        "sort": 1
+      },
+      {
         "name": "show",
         "label": "Show",
         "type": "query",
@@ -1622,10 +1697,10 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(bookify_show_seats, show)",
+          "query": "label_values(bookify_show_seats{env=\"$env\"}, show)",
           "refId": "show"
         },
-        "definition": "label_values(bookify_show_seats, show)",
+        "definition": "label_values(bookify_show_seats{env=\"$env\"}, show)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
