@@ -11,9 +11,11 @@ Design reasoning, trade-offs and test results are in [WRITEUP.md](WRITEUP.md).
 **Quick start** (Docker and JDK 21+):
 
 ```bash
-docker compose up --build -d          # Postgres, app and proxy on http://localhost:8080
-./burst.sh http://localhost:8080      # 20k-request on-sale stampede, checked end to end
+docker compose --profile observability up --build -d   # app, Postgres, proxy, Prometheus, Loki, Grafana
+./burst.sh http://localhost:8080                        # 20k-request on-sale stampede, checked end to end
 ```
+
+Then watch it on the dashboard at http://localhost:3000/d/bookify.
 
 ## Live deployment
 
@@ -58,22 +60,54 @@ A practice run from the same laptop shows the client-side view: about 1,470 requ
 
 ## Run locally
 
-Requires Docker. The burst script and the tests also need JDK 21 or newer.
+Requires Docker. The burst script and the tests also need JDK 21 or newer. No `.env` file is needed: compose has working local defaults (copy `.env.example` to `.env` to override them).
+
+**Everything: the app plus the metrics and logs dashboard** (recommended):
 
 ```bash
-docker compose up --build
+docker compose --profile observability up --build -d
 ```
 
-This starts Postgres 16, the app and a Caddy reverse proxy. The service is on **http://localhost:8080** and is ready when:
+**The app only**, lighter, if you don't need the dashboard:
+
+```bash
+docker compose up --build -d
+```
+
+| | App only | With `--profile observability` |
+| --- | --- | --- |
+| Containers | Postgres 16, app, Caddy proxy | + Prometheus, Loki, Grafana Alloy, Grafana |
+| Ports that must be free | 8080, 5432 | 8080, 5432, 3000, 9090, 3100 |
+| Extra memory | – | about 1 GB |
+
+The first build downloads dependencies and takes a minute or two; later starts take seconds. The service is ready when:
 
 ```bash
 curl -s localhost:8080/actuator/health/readiness
 # {"status":"UP"}
 ```
 
-No `.env` file is needed for local runs; compose has working defaults. To override them, copy `.env.example` to `.env`.
+| What | URL |
+| --- | --- |
+| API | http://localhost:8080 |
+| Grafana dashboard (no login) | http://localhost:3000/d/bookify |
+| Prometheus and its alerts | http://localhost:9090/alerts |
+| Raw metrics from the app | http://localhost:8080/actuator/prometheus |
 
-To reset the database (needed after a schema change): `docker compose down -v`.
+Then run the [burst test](#burst-test) against it:
+
+```bash
+./burst.sh http://localhost:8080
+```
+
+**Stop:**
+
+```bash
+docker compose --profile observability down       # stop; keep the data
+docker compose --profile observability down -v    # stop and delete all data (database and logs)
+```
+
+Use the same `--profile observability` flag on `down` as on `up`, so the dashboard containers are stopped too. A schema change needs `down -v`, because `schema.sql` creates tables only if they don't exist yet.
 
 ## Get a token
 
@@ -318,10 +352,10 @@ Invalid requests (400) and unknown shows (404) are not declines. Counters reset 
 
 ### Dashboard
 
-An optional observability stack comes with a ready-made dashboard: Prometheus for metrics, Loki for logs (fed by Grafana Alloy, which reads the app container's output), and Grafana.
+The `observability` profile (see [Run locally](#run-locally)) adds a ready-made dashboard: Prometheus for metrics, Loki for logs (fed by Grafana Alloy, which reads the app container's output), and Grafana.
 
 ```bash
-docker compose --profile observability up --build
+docker compose --profile observability up --build -d
 ```
 
 | What | Where |
@@ -332,7 +366,7 @@ docker compose --profile observability up --build
 | Logs in Grafana Explore (Loki queries) | http://localhost:3000/explore |
 | Raw metrics from the app | http://localhost:8080/actuator/prometheus |
 
-The dashboard has three rows:
+The dashboard has four rows:
 - **Reservations:**
   - seat invariant drift, which must be 0
   - confirmed, declined, replayed and contention counts
@@ -343,7 +377,7 @@ The dashboard has three rows:
 - **Latency, database pool and JVM:** p50/p95/p99, pool usage and connection waits, heap.
 - **Logs:** log lines by outcome, warnings and errors, and the access log. Paste an id into the **Request id** box at the top to see one request.
 
-Use the **Show** selector at the top to focus on one show. Prometheus scrapes every 5 seconds.
+Use the **Show** selector at the top to focus on one show; **Environment** defaults to `local`. Prometheus scrapes every 5 seconds.
 
 **Watching a deployed instance.** The local stack can also scrape a deployment:
 
