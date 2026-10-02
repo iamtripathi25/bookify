@@ -54,12 +54,35 @@ services:
       - "9090:9090"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  loki:
+    image: grafana/loki:3.5.3
+    profiles: ["observability"]
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki.yml:/etc/loki/loki.yml:ro
+      - lokidata:/loki
+
+  # Reads the app container's logs from Docker and pushes them to Loki.
+  alloy:
+    image: grafana/alloy:v1.10.0
+    profiles: ["observability"]
+    depends_on:
+      - loki
+    command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
+    volumes:
+      - ./observability/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
   grafana:
     image: grafana/grafana:12.1.1
     profiles: ["observability"]
     depends_on:
       - prometheus
+      - loki
     ports:
       - "3000:3000"
     environment:
@@ -74,3 +97,4 @@ services:
 
 volumes:
   pgdata:
+  lokidata:

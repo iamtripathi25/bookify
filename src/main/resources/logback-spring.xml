@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+	<!-- Tests and local runs from an IDE keep Spring's readable console format. -->
+	<springProfile name="test | plainlogs">
+		<include resource="org/springframework/boot/logging/logback/base.xml"/>
+	</springProfile>
+
+	<!--
+		Everywhere else: one JSON object per line. MDC fields (request_id, user_id, show_id, outcome)
+		and access-log fields (method, path, status, latency_ms) become top-level keys.
+	-->
+	<springProfile name="!(test | plainlogs)">
+		<appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+			<encoder class="net.logstash.logback.encoder.LogstashEncoder">
+				<fieldNames>
+					<timestamp>ts</timestamp>
+					<version>[ignore]</version>
+					<levelValue>[ignore]</levelValue>
+					<thread>[ignore]</thread>
+				</fieldNames>
+				<shortenedLoggerNameLength>36</shortenedLoggerNameLength>
+			</encoder>
+		</appender>
+		<!-- Requests don't wait on stdout. Blocks rather than drops when full (discardingThreshold 0). -->
+		<appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+			<queueSize>8192</queueSize>
+			<discardingThreshold>0</discardingThreshold>
+			<appender-ref ref="JSON"/>
+		</appender>
+		<root level="INFO">
+			<appender-ref ref="ASYNC"/>
+		</root>
+	</springProfile>
+
+</configuration>

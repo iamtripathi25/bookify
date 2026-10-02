@@ -1,0 +1,45 @@
+# What would page someone at 2am. Loaded by the local Prometheus (see prometheus.yml).
+groups:
+  - name: bookify
+    rules:
+      - alert: ServerErrors
+        expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[1m])) > 0
+        for: 1m
+        labels: { severity: page }
+        annotations:
+          summary: "5xx responses for over a minute. Declines are always 4xx, so this is a bug or an outage."
+
+      - alert: SeatInvariantDrift
+        expr: max(abs(sum by (show) (bookify_seats) - on (show) bookify_show_seats)) > 0
+        for: 30s
+        labels: { severity: page }
+        annotations:
+          summary: "available + held + confirmed no longer equals total seats for some show."
+
+      - alert: AppDown
+        expr: up{job="bookify"} == 0
+        for: 30s
+        labels: { severity: page }
+        annotations:
+          summary: "Prometheus can't scrape the app. It is down or not ready."
+
+      - alert: ReserveLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{uri="/shows/{showId}/reserve"}[5m]))) > 2
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "Reserve p99 above 2s for 5 minutes."
+
+      - alert: DbPoolQueueing
+        expr: max(hikaricp_connections_pending{pool="main"}) > 0
+        for: 5m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Requests have been waiting for a database connection for 5 minutes. The pool is undersized."
+
+      - alert: ContentionDeclines
+        expr: sum(rate(bookify_reservations_declined_total{reason="contention"}[5m])) > 0
+        for: 5m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Reservations declined as CONTENTION (lock timeouts, pool waits) for 5 minutes."

@@ -14,6 +14,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import com.iamtripathi25.bookify.config.LogContext;
+import com.iamtripathi25.bookify.config.ReservationMetrics;
 import com.iamtripathi25.bookify.db.SqlStates;
 import com.iamtripathi25.bookify.error.ContentionException;
 import com.iamtripathi25.bookify.error.IdempotencyMismatchException;
@@ -54,10 +56,14 @@ public class ReservationFacade {
 
 	private final ReservationTxService tx;
 
-	public ReservationFacade(ShowService shows, ReservationRepository repository, ReservationTxService tx) {
+	private final ReservationMetrics metrics;
+
+	public ReservationFacade(ShowService shows, ReservationRepository repository, ReservationTxService tx,
+			ReservationMetrics metrics) {
 		this.shows = shows;
 		this.repository = repository;
 		this.tx = tx;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -65,6 +71,34 @@ public class ReservationFacade {
 	 * @param headerKey the Idempotency-Key header; wins over the body key when both are present
 	 */
 	public ReserveResult reserve(UUID showId, String userId, List<String> requestedSeats, String headerKey,
+			String bodyKey) {
+		LogContext.showId(showId);
+		ReserveResult result;
+		try {
+			result = attemptReserve(showId, userId, requestedSeats, headerKey, bodyKey);
+		}
+		catch (RuntimeException ex) {
+			String reason = declineReason(ex);
+			if (reason != null) {
+				metrics.declined(showId, reason);
+				LogContext.outcome(reason);
+			}
+			throw ex;
+		}
+		// Only reached after the transaction committed (or a replay was found).
+		Reservation reservation = result.reservation();
+		if (result.replay()) {
+			metrics.replayed(showId);
+			LogContext.outcome(ReservationMetrics.IDEMPOTENT_REPLAY);
+		}
+		else {
+			metrics.confirmed(showId, reservation.seats().size());
+			LogContext.outcome("confirmed");
+		}
+		return result;
+	}
+
+	private ReserveResult attemptReserve(UUID showId, String userId, List<String> requestedSeats, String headerKey,
 			String bodyKey) {
 		// A1: validate and normalise.
 		String key = idempotencyKey(headerKey, bodyKey);
@@ -112,7 +146,34 @@ public class ReservationFacade {
 
 	/** Owner-only cancel; 404 for a missing reservation or someone else's. */
 	public Reservation cancel(UUID reservationId, String userId) {
-		return withRetry(() -> tx.cancel(reservationId, userId));
+		CancelResult result = withRetry(() -> tx.cancel(reservationId, userId));
+		Reservation reservation = result.reservation();
+		LogContext.showId(reservation.showId());
+		if (result.changed()) {
+			metrics.cancelled(reservation.showId(), reservation.seats().size());
+			LogContext.outcome("cancelled");
+		}
+		else {
+			LogContext.outcome("already_cancelled");
+		}
+		return reservation;
+	}
+
+	/** The metrics reason for a decline, or null for errors that aren't declines (400, 404, bugs). */
+	private static String declineReason(RuntimeException ex) {
+		if (ex instanceof SeatTakenException) {
+			return ReservationMetrics.SEAT_TAKEN;
+		}
+		if (ex instanceof PerUserLimitException) {
+			return ReservationMetrics.PER_USER_LIMIT;
+		}
+		if (ex instanceof IdempotencyMismatchException) {
+			return ReservationMetrics.IDEMPOTENCY_MISMATCH;
+		}
+		if (ex instanceof ContentionException || SqlStates.isContention(ex)) {
+			return ReservationMetrics.CONTENTION;
+		}
+		return null;
 	}
 
 	/** Owner-only read; 404 for a missing reservation or someone else's. */

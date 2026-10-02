@@ -75,12 +75,12 @@ public class ReservationTxService {
 	 * cases are indistinguishable so ids can't be probed)
 	 */
 	@Transactional(isolation = Isolation.READ_COMMITTED)
-	public Reservation cancel(UUID reservationId, String userId) {
+	public CancelResult cancel(UUID reservationId, String userId) {
 		// 1: lock the reservation row. Concurrent cancels of one reservation queue here.
 		Reservation reservation = repository.findOwned(reservationId, userId, true)
 			.orElseThrow(() -> new NotFoundException("Reservation not found"));
 		if (Reservation.CANCELLED.equals(reservation.status())) {
-			return reservation;
+			return new CancelResult(reservation, false);
 		}
 
 		// 2: return the seats to the user's quota.
@@ -96,8 +96,8 @@ public class ReservationTxService {
 
 		// 4: mark it cancelled.
 		repository.markCancelled(reservationId);
-		return new Reservation(reservation.id(), reservation.showId(), reservation.userId(), reservation.seats(),
-				reservation.amountPaise(), Reservation.CANCELLED);
+		return new CancelResult(new Reservation(reservation.id(), reservation.showId(), reservation.userId(),
+				reservation.seats(), reservation.amountPaise(), Reservation.CANCELLED), true);
 	}
 
 }

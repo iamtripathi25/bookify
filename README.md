@@ -25,9 +25,34 @@ No `.env` file is needed for local runs; compose has working defaults. To overri
 
 To reset the database (needed after a schema change): `docker compose down -v`.
 
-## Watch metrics
+## Metrics, logs and alerts
 
-An optional Prometheus and Grafana stack comes with a ready-made dashboard:
+### Metrics
+
+The app exposes Prometheus metrics at `/actuator/prometheus` (public, no token).
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `bookify_reservations_confirmed_total{show}` | Counter | New reservations (each was a 201) |
+| `bookify_seats_confirmed_total{show}` | Counter | Seats booked by those reservations |
+| `bookify_reservations_declined_total{show,reason}` | Counter | Reserve requests that booked nothing; `reason` is `seat_taken`, `per_user_limit`, `idempotent_replay`, `idempotency_mismatch` or `contention` |
+| `bookify_reservations_replayed_total{show}` | Counter | Retries answered with the original reservation (each was a 200) |
+| `bookify_reservations_cancelled_total{show}`, `bookify_seats_released_total{show}` | Counter | Cancels and the seats they freed |
+| `bookify_seats{show,status}` | Gauge | Seats per status, read from the database every second |
+| `bookify_show_seats{show}` | Gauge | Total seats per show |
+| `http_server_requests_seconds_*` | Histogram | Request counts, status codes and latency per endpoint |
+| `hikaricp_connections_*{pool="main"}` | Gauge | Database pool usage and queueing |
+
+How they reconcile:
+- `sum by (show) (bookify_seats) == bookify_show_seats`, always.
+- `bookify_seats{status="confirmed"}` equals `confirmed` in `GET /shows/{id}`.
+- Counter changes during a run equal the responses: 201s = confirmed, 200s = replayed, 409s = declines by reason.
+
+Invalid requests (400) and unknown shows (404) are not declines. Counters reset when the app restarts; the seat gauges come from the database and don't.
+
+### Dashboard
+
+An optional observability stack comes with a ready-made dashboard: Prometheus for metrics, Loki for logs (fed by Grafana Alloy, which reads the app container's output), and Grafana.
 
 ```bash
 docker compose --profile observability up --build
@@ -36,17 +61,66 @@ docker compose --profile observability up --build
 | What | Where |
 | --- | --- |
 | Grafana dashboard (no login) | http://localhost:3000/d/bookify |
-| Prometheus | http://localhost:9090 |
+| Prometheus and its alerts | http://localhost:9090/alerts |
+| Logs Drilldown (browse logs, no query needed) | http://localhost:3000/a/grafana-lokiexplore-app/explore |
+| Logs in Grafana Explore (Loki queries) | http://localhost:3000/explore |
 | Raw metrics from the app | http://localhost:8080/actuator/prometheus |
 
-The dashboard shows:
-- the 5xx count, which must stay at 0
-- reserve responses by status
-- p50/p95/p99 latency
-- database pool usage and queueing
-- JVM heap
+The dashboard has three rows:
+- **Reservations:**
+  - seat invariant drift, which must be 0
+  - confirmed, declined, replayed and contention counts
+  - outcomes per second
+  - seats by status
+  - declines by reason
+- **Traffic:** the 5xx count (must be 0), reserve responses by status, requests per endpoint.
+- **Latency, database pool and JVM:** p50/p95/p99, pool usage and connection waits, heap.
+- **Logs:** log lines by outcome, warnings and errors, and the access log. Paste an id into the **Request id** box at the top to see one request.
 
-Prometheus scrapes every 5 seconds. Totals over a time range are Prometheus estimates; exact counts come from the raw counters at `/actuator/prometheus`.
+Use the **Show** selector at the top to focus on one show. Prometheus scrapes every 5 seconds.
+
+### Logs
+
+Every log line is one JSON object. Each request gets an id: send `X-Request-Id` to set it, or one is generated. It comes back in the `X-Request-Id` response header and in every error body. Each request writes one access-log line:
+
+```json
+{"ts":"2026-10-02T08:31:14.964Z","level":"INFO","logger_name":"bookify.access",
+ "request_id":"7b356a69-…","user_id":"u3","show_id":"2538ce8e-…","outcome":"confirmed",
+ "method":"POST","path":"/shows/2538ce8e-…/reserve","status":201,"latency_ms":27}
+```
+
+`outcome` is what the request ended as: `confirmed`, `idempotent_replay`, `seat_taken`, `per_user_limit`, `idempotency_mismatch`, `contention`, `cancelled`, `invalid_request`, `not_found`, `unauthorized`, and so on. Health checks and metric scrapes aren't logged.
+
+In Grafana (with the observability profile), query Loki in Explore. A few examples:
+
+```
+{service="app", logger="bookify.access"}                  # every request
+{service="app", level=~"WARN|ERROR"}                      # problems only
+{service="app"} | json | request_id="<id>"                # one request
+{service="app", outcome="seat_taken"} | json | user_id="u-42"
+```
+
+`level`, `outcome` and `logger` are Loki labels. Other fields are filtered with `| json`.
+
+Without the observability stack:
+
+```bash
+docker compose logs -f app                                            # follow
+docker compose logs app --no-log-prefix | grep '"request_id":"<id>"'  # one request
+```
+
+### Alerts
+
+`observability/alerts.yml` defines what would page someone. The local Prometheus loads it.
+
+| Alert | Fires when | Severity |
+| --- | --- | --- |
+| `ServerErrors` | Any 5xx for 1 minute | Page |
+| `SeatInvariantDrift` | Seat counts stop adding up to the total for 30s | Page |
+| `AppDown` | Prometheus can't scrape the app for 30s | Page |
+| `ReserveLatencyHigh` | Reserve p99 above 2s for 5 minutes | Page |
+| `DbPoolQueueing` | Requests waiting for a database connection for 5 minutes | Ticket |
+| `ContentionDeclines` | `CONTENTION` declines for 5 minutes | Ticket |
 
 ## Get a token
 

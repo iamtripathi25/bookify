@@ -8,3 +8,8 @@ datasources:
     isDefault: true
     jsonData:
       timeInterval: 5s
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100

@@ -109,9 +109,31 @@ Reservation row, then user counter, then seats by label: the same order reserve 
 
 **Adding a timed hold later.** The schema already has the `held` status and counts it in the show state. A hold would add `held_until` to reservations and a scheduled sweeper that runs this same cancel transaction for expired holds. Reserve would then also accept expired holds as available when it locks the seats.
 
-## Health checks
+## Observability
 
-Liveness never touches the database. Readiness runs `SELECT 1` on a separate two-connection pool with 2-second timeouts, so it never waits behind reservation traffic and fails closed within about 2 seconds when Postgres is unreachable.
+The aim is to see from the outside, while a burst is running, that the service is behaving correctly, not just that it is up.
+
+**Health.** Liveness never touches the database. Readiness runs `SELECT 1` on a separate two-connection pool with 2-second timeouts, so it never waits behind reservation traffic and fails closed within about 2 seconds when Postgres is unreachable.
+
+**Metrics that reconcile.** Two kinds of metrics check each other:
+- **Counters from the request path:** confirmed, declined by reason, replayed, cancelled. They are incremented only after the transaction has committed, so a rolled-back attempt never counts as confirmed. Every counter for a show is registered at 0 when the show is created. That way Prometheus sees a zero before the first booking, and a burst's first second isn't lost.
+- **Gauges from the database:** `bookify_seats{show,status}` and `bookify_show_seats{show}` are read with one `GROUP BY` every second, on the same small pool readiness uses. They keep flowing while the main pool is saturated, and they can't drift from the data because they are the data.
+
+The invariant `available + held + confirmed == total_seats` is a live PromQL expression: `sum by (show) (bookify_seats) - on (show) bookify_show_seats`. It is on the dashboard and has an alert. In a test run, the counter changes matched the HTTP responses exactly: 40 × 201, 80 × 200 and 780 × 409 gave confirmed 40, replayed 80 and `seat_taken` 780, and the confirmed-seat gauge matched `GET /shows/{id}`.
+
+**Counting over a time range.** Prometheus's `increase()` gets bursts wrong in two ways. It treats the first scraped value of a new series as its starting point, and it extrapolates across the window. In testing it reported 0 confirmed for a burst of 180. The dashboard counts with `max_over_time(x[range]) - (x offset range, or 0 for a series born inside the range)` instead, which matched the responses exactly. The remaining gap: increments made in the last few seconds before a crash are never scraped.
+
+**Logs.** One JSON object per line, written through an async appender so requests don't wait on stdout. A filter ahead of Spring Security assigns each request an id. It takes the caller's `X-Request-Id` if it looks safe, otherwise generates one. The id goes on every log line, in the response header and in every error body, including 401s. Each request writes one access-log line with `request_id`, `user_id`, `show_id`, `outcome`, `status` and `latency_ms`, so a grader's failed request can be found from its response alone.
+
+**What would page me at 2am.** These are Prometheus rules in `observability/alerts.yml`:
+- **Any 5xx for a minute.** Declines are always 4xx, so a 5xx is a bug or an outage.
+- **Seat invariant drift for 30 seconds.** The one thing that must never happen.
+- **The app can't be scraped for 30 seconds**, meaning it is down or not ready.
+- **Reserve p99 above 2 seconds for 5 minutes.**
+
+Two more raise a ticket rather than a page: requests queueing for a database connection for 5 minutes (the pool is undersized), and sustained `CONTENTION` declines.
+
+**Cardinality.** Metrics carry a `show` label. That's fine for a handful of shows during grading. With thousands of shows, I'd drop the label from counters, keep it only on the seat gauges, and limit those to shows currently on sale.
 
 ## Auth and the test-token endpoint
 
@@ -143,4 +165,5 @@ I used Claude Code (Claude Opus) throughout. The split:
 - A `seat_no` column, so seats display in creation order (`A1, A2, A10`) rather than alphabetical order.
 - `logstash-logback-encoder` 8.1 rather than 9.0, because 9.0 needs Jackson 3.
 - Plain HTTP on local Caddy instead of HTTPS, because Java's HTTP client rejects Caddy's self-signed certificate.
+- The time-range formula on the dashboard. Prometheus's `increase()` misreported bursts on new series, so the AI tested alternatives against known response counts until the numbers matched exactly.
 - Race tests that call the write transaction directly, not just over HTTP. Over HTTP, the pre-check turns most losers away before they reach the row locks, so the HTTP tests alone would barely exercise the locking.

@@ -13,6 +13,7 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
@@ -46,6 +47,7 @@ public class SecurityConfig {
 				.authenticationEntryPoint(unauthorized)
 				.accessDeniedHandler(forbidden))
 			.exceptionHandling(ex -> ex.authenticationEntryPoint(unauthorized).accessDeniedHandler(forbidden))
+			.addFilterAfter(new UserLogContextFilter(), BearerTokenAuthenticationFilter.class)
 			.build();
 	}
 
@@ -61,6 +63,7 @@ public class SecurityConfig {
 
 	private static void writeError(ObjectMapper objectMapper, HttpServletResponse res, int status, ErrorBody body)
 			throws IOException {
+		LogContext.outcomeIfAbsent(body.code().toLowerCase());
 		res.setStatus(status);
 		res.setContentType(MediaType.APPLICATION_JSON_VALUE);
 		objectMapper.writeValue(res.getOutputStream(), body);

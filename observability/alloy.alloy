@@ -1,0 +1,44 @@
+// Ships the app container's JSON log lines to Loki.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Keep only the app service and label streams by compose service.
+discovery.relabel "app" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+  rule {
+    source_labels = ["service"]
+    regex         = "app"
+    action        = "keep"
+  }
+}
+
+loki.source.docker "app" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.app.output
+  forward_to = [loki.process.json.receiver]
+}
+
+// Promote a few low-cardinality fields to labels for fast filtering. High-cardinality fields
+// (request_id, user_id, show_id) stay in the line and are queried with `| json`.
+loki.process "json" {
+  stage.json {
+    expressions = { level = "level", outcome = "outcome", logger = "logger_name" }
+  }
+  stage.labels {
+    values = { level = "", outcome = "", logger = "" }
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

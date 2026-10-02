@@ -2,6 +2,7 @@ package com.iamtripathi25.bookify.error;
 
 import java.util.stream.Collectors;
 
+import com.iamtripathi25.bookify.config.LogContext;
 import com.iamtripathi25.bookify.db.SqlStates;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +34,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
 	@ExceptionHandler(ApiException.class)
 	ResponseEntity<ErrorBody> handleApi(ApiException ex) {
+		LogContext.outcomeIfAbsent(ex.code().toLowerCase());
 		return ResponseEntity.status(ex.status()).body(ErrorBody.of(ex.code(), ex.getMessage(), ex.seats()));
 	}
 
@@ -52,6 +54,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	/** Deliberately a 500: hiding bugs as 4xx would corrupt the outcome counts. */
 	@ExceptionHandler(Exception.class)
 	ResponseEntity<ErrorBody> handleUnexpected(Exception ex) {
+		LogContext.outcome("internal_error");
 		log.error("Unhandled exception", ex);
 		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 			.body(ErrorBody.of("INTERNAL_ERROR", "Internal server error"));
@@ -85,6 +88,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 		if (!(body instanceof ErrorBody)) {
 			body = ErrorBody.of(codeFor(statusCode), messageFor(ex, statusCode));
 		}
+		LogContext.outcomeIfAbsent(((ErrorBody) body).code().toLowerCase());
 		return ResponseEntity.status(statusCode).headers(headers).body(body);
 	}
 

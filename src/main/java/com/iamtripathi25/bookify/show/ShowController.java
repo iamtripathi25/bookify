@@ -4,6 +4,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.UUID;
 
+import com.iamtripathi25.bookify.config.LogContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -34,11 +35,14 @@ public class ShowController {
 	ResponseEntity<ShowState> create(@Valid @RequestBody CreateShowRequest request) {
 		ShowState created = shows.create(request.name(), request.seats(), request.pricePaise(),
 				request.perUserLimit());
+		LogContext.showId(created.id());
+		LogContext.outcome("show_created");
 		return ResponseEntity.created(URI.create("/shows/" + created.id())).body(created);
 	}
 
 	@GetMapping("/{id}")
 	ShowState get(@PathVariable UUID id) {
+		LogContext.showId(id);
 		return shows.state(id);
 	}
 
