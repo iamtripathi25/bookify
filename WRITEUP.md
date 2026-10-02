@@ -160,7 +160,7 @@ Two more raise a ticket rather than a page: requests queueing for a database con
 
 ## Load testing and tuning
 
-`./burst.sh` runs the graders' scenario against any URL: hot-seat storm, a 20,000-request stampede with retries and key reuse, limit storm and spoof checks. It then reconciles every response against the API and the metrics. Locally it passed more than 30 full runs with zero 5xx. Tuning was driven by measurements, and three findings changed the setup:
+`./burst.sh` runs the graders' scenario against any URL: hot-seat storm, a 20,000-request stampede with retries and key reuse, limit storm and spoof checks. It then reconciles every response against the API and the metrics. Locally it passed more than 30 full runs with zero 5xx. Against the live Railway deployment, the recorded run passed too: 20,511 reserve requests, one buyer per hot seat, zero 5xx, every metric equal to the responses, and a mean wait of 81 ms for a database connection. Tuning was driven by measurements, and three findings changed the setup:
 
 - **A bigger pool is slower.** With 1,000 requests in flight, pools of 15 and 30 performed about the same, while 45 and 60 were noticeably slower. More connections means more contention inside Postgres, not more work done. The pool stays at 30. Requests queue for a connection (mean wait about 150 ms under the full burst) rather than failing.
 - **Measure the right thing.** Server-side timing from the app's own metrics (about 156 ms mean) showed the client's first latency figures (p50 of 2.7 s) were mostly the client queueing for its own in-flight slots. The burst script now times only the HTTP request.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Point the local Prometheus at a deployed Bookify, so the local Grafana dashboard can watch it.
-#   observability/watch-live.sh https://bookify-production-xxxx.up.railway.app
+#   observability/watch-live.sh https://<live-url>
 #   observability/watch-live.sh --off
 # Then pick Environment = live at the top of the dashboard.
 set -euo pipefail

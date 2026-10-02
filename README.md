@@ -2,7 +2,9 @@
 
 A seat reservation service for assigned-seat shows. It is built to stay correct when thousands of buyers hit the same seats at once: no seat is sold twice, no user goes over their limit, and a retried request never books twice.
 
-Java 21, Spring Boot 3.5, PostgreSQL 16. JSON over HTTP; money is always integer paise.
+Java 21, Spring Boot 3.5, PostgreSQL. JSON over HTTP; money is always integer paise.
+
+**Live deployment:** [details below](#live-deployment). The URL, the admin key and a screen recording of the live burst are shared with the submission.
 
 Design reasoning, trade-offs and test results are in [WRITEUP.md](WRITEUP.md).
 
@@ -12,6 +14,47 @@ Design reasoning, trade-offs and test results are in [WRITEUP.md](WRITEUP.md).
 docker compose up --build -d          # Postgres, app and proxy on http://localhost:8080
 ./burst.sh http://localhost:8080      # 20k-request on-sale stampede, checked end to end
 ```
+
+## Live deployment
+
+| | |
+| --- | --- |
+| Base URL | Shared with the submission (`<live-url>` below) |
+| Liveness | `<live-url>/actuator/health/liveness` |
+| Readiness (checks the database) | `<live-url>/actuator/health/readiness` |
+| Prometheus metrics | `<live-url>/actuator/prometheus` |
+
+**Hosting.** Railway runs two services: the app, built from this repo's `Dockerfile` on every push to `main`, and a Postgres database reachable only over Railway's private network. Railway routes traffic to a new deployment only after `/actuator/health/readiness` passes, and restarts the app if it exits (`railway.json`). Railway's managed Postgres is version 18; tests and the local stack use 16, and the schema and SQL are standard across both.
+
+**Cold start.** About 3 seconds from container start to serving (2.96 s and 3.25 s measured). On first boot, `schema.sql` creates the tables; later boots leave them unchanged. Data survives app restarts and redeploys, and the app recovers on its own after a database restart.
+
+**Tokens on the live service.**
+- User tokens: open, exactly as locally (`POST /auth/token` with a `user_id`).
+- Admin tokens (needed to create a show): need the admin key. It isn't in this repo; it's shared privately with the submission, along with the URL.
+
+**Run the burst against it:**
+
+```bash
+BOOKIFY_ADMIN_KEY=<admin key> ./burst.sh <live-url>
+```
+
+**Live burst results** (the recorded run, 2 October 2026, from a laptop in India to Railway):
+
+| Check | Result |
+| --- | --- |
+| Hot seat A12, 500 users at once | 1 × 201, 499 × 409 `SEAT_TAKEN` |
+| Stampede of about 20,000 requests | each of the 10 hot seats sold to exactly one buyer |
+| Confirmed | 715 (713 in the burst + 2 spoof-check bookings) |
+| Declined | 19,695: 19,626 `SEAT_TAKEN`, 63 `IDEMPOTENCY_KEY_REUSED`, 6 `PER_USER_LIMIT` |
+| Idempotent replays (200) | 101 |
+| 5xx, contention declines, invariant drift | 0, 0, 0 |
+| Metrics vs responses | every counter and gauge equal to the response counts |
+| Database pool | peak 235 requests queued for 30 connections; mean wait 81 ms |
+| Reserve p99, server-side | 653 ms |
+
+A practice run from the same laptop shows the client-side view: about 1,470 requests/s, p50 324 ms, p95 965 ms, p99 1.5 s. Every request crosses the internet to Railway's region, which accounts for most of the difference from local figures.
+
+**Logs.** Railway's logs aren't public, so the screen recording shared with the submission shows them under load: the burst script running to `PASS`, the Grafana dashboard watching the live service, and Railway's live log stream side by side. Railway accepts at most 500 log lines per second per service, and a burst writes about 1,500 access lines a second, so some routine lines (mostly `SEAT_TAKEN`) are dropped from Railway's log view during the peak; Railway notes how many. The metrics, and the burst script's reconciliation against them, are the exact record.
 
 ## Run locally
 
