@@ -93,8 +93,8 @@ public abstract class ApiTestSupport {
 
 	/**
 	 * The invariants every test must leave intact: per-seat states sum to the total, an owned seat
-	 * belongs to a confirmed reservation of the same user, and a confirmed reservation owns exactly
-	 * its seats.
+	 * belongs to a confirmed reservation of the same user, a confirmed reservation owns exactly its
+	 * seats, and each user's quota count equals the seats they own.
 	 */
 	protected void assertInvariants(String showId) {
 		UUID id = UUID.fromString(showId);
@@ -125,6 +125,21 @@ public abstract class ApiTestSupport {
 				  AND cardinality(r.seats) <> (SELECT count(*) FROM seats st WHERE st.reservation_id = r.id)
 				""", Integer.class, id);
 		assertThat(mismatched).as("confirmed reservations not owning exactly their seats").isZero();
+
+		Integer quotaDrift = jdbc.queryForObject("""
+				SELECT count(*) FROM (
+				  SELECT u.user_id, u.held,
+				         (SELECT count(*) FROM seats st WHERE st.show_id = u.show_id AND st.user_id = u.user_id) AS owned
+				  FROM user_show_counts u WHERE u.show_id = ?
+				) q WHERE q.held <> q.owned
+				""", Integer.class, id);
+		assertThat(quotaDrift).as("users whose quota count differs from the seats they own").isZero();
+		Integer uncounted = jdbc.queryForObject("""
+				SELECT count(*) FROM seats st
+				WHERE st.show_id = ? AND st.user_id IS NOT NULL
+				  AND NOT EXISTS (SELECT 1 FROM user_show_counts u WHERE u.show_id = st.show_id AND u.user_id = st.user_id)
+				""", Integer.class, id);
+		assertThat(uncounted).as("owned seats missing from the quota table").isZero();
 	}
 
 }

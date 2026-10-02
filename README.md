@@ -84,7 +84,7 @@ Tokens last one hour. The acting user is always the token's subject; any `user_i
 | `POST /auth/token` | None (admin role needs `X-Admin-Key`) | 200 token | 400, 403; 404 when dev auth is disabled |
 | `POST /shows` | Admin | 201 show, every seat `available` | 400, 401, 403 |
 | `GET /shows/{id}` | Any user | 200 seat statuses and counts | 400 (id not a UUID), 401, 404 |
-| `POST /shows/{id}/reserve` | Any user | 201 reservation | 400, 401, 404, 409 |
+| `POST /shows/{id}/reserve` | Any user | 201 new reservation; **200 replay** of an earlier request with the same key | 400, 401, 404, 409 |
 | `GET /actuator/health/liveness` | None | 200 | — |
 | `GET /actuator/health/readiness` | None | 200 | 503 when the database is unreachable |
 | `GET /actuator/prometheus` | None | 200 | — |
@@ -147,9 +147,11 @@ curl -s -X POST localhost:8080/shows/$SHOW_ID/reserve \
 ```
 
 - **All-or-nothing.** If any requested seat is unavailable, nothing is booked and the response is 409 `SEAT_TAKEN`, listing the unavailable seats in `seats`.
-- **Idempotency key is required.** Send it in the `Idempotency-Key` header or as `idempotency_key` in the body; the header wins if both are present. Up to 128 characters.
+- **Idempotency key is required.** Send it in the `Idempotency-Key` header or as `idempotency_key` in the body; the header wins if both are present. Up to 128 characters. Keys are scoped per user.
+- **Retries are safe.** Repeating a request with the same key returns **200, not 201**, with the original reservation in its current state. Nothing is booked twice. Seat order doesn't matter: `["A2","A1"]` is the same request as `["A1","A2"]`.
+- **A key belongs to one request.** Reusing a key with different seats, or for a different show, is 409 `IDEMPOTENCY_KEY_REUSED`, and nothing changes. A declined request doesn't use up its key; a retry with the same key tries again.
 - **Seats:** at least one, no duplicates, every label must exist in the show (unknown labels are a 400).
-- **Per-user limit:** asking for more seats than the show's `per_user_limit` is 409 `PER_USER_LIMIT`.
+- **Per-user limit:** a user can hold at most the show's `per_user_limit` seats in total, across all their reservations for that show. A request that would go over is 409 `PER_USER_LIMIT`.
 - **Identity comes from the token.** A `user_id` in the body is ignored.
 - `amount_paise` is the show's price times the number of seats.
 
@@ -167,9 +169,11 @@ Every error has the same shape:
 | 401 | `UNAUTHORIZED` |
 | 403 | `FORBIDDEN` |
 | 404 | `NOT_FOUND` |
-| 409 | `SEAT_TAKEN`, `PER_USER_LIMIT`, `CONTENTION` (the database was too busy to decide in time; safe to retry) |
+| 409 | `SEAT_TAKEN`, `PER_USER_LIMIT`, `IDEMPOTENCY_KEY_REUSED`, `CONTENTION` (the database was too busy to decide in time; safe to retry) |
 
 Declines are always 4xx. A 5xx means a bug.
+
+**Counting outcomes in a load test:** a seat raced by many users gets exactly one 201. If the winner retries, those retries are 200s, not extra 201s.
 
 ## Configuration
 

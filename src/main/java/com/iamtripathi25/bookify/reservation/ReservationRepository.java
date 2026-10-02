@@ -1,6 +1,7 @@
 package com.iamtripathi25.bookify.reservation;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import com.iamtripathi25.bookify.db.PgArrays;
@@ -26,11 +27,19 @@ public class ReservationRepository {
 				""", seatParams(showId, labels), SeatState.MAPPER);
 	}
 
-	public void insert(Reservation r, String idempotencyKey, String requestHash) {
-		jdbc.update("""
+	/**
+	 * B1: claims the idempotency key. If a twin with the same (user, key) is in flight, this blocks
+	 * on the unique index until the twin's transaction ends: if it committed, nothing is inserted
+	 * and this returns false; if it rolled back, the insert goes ahead.
+	 * @return true if this call claimed the key
+	 */
+	public boolean claim(Reservation r, String idempotencyKey, String requestHash) {
+		List<UUID> inserted = jdbc.queryForList("""
 				INSERT INTO reservations
 				  (id, show_id, user_id, seats, amount_paise, status, idempotency_key, request_hash)
 				VALUES (:id, :show, :user, :seats, :amount, :status, :key, :hash)
+				ON CONFLICT (user_id, idempotency_key) DO NOTHING
+				RETURNING id
 				""", new MapSqlParameterSource()
 			.addValue("id", r.id())
 			.addValue("show", r.showId())
@@ -39,7 +48,42 @@ public class ReservationRepository {
 			.addValue("amount", r.amountPaise())
 			.addValue("status", r.status())
 			.addValue("key", idempotencyKey)
-			.addValue("hash", requestHash));
+			.addValue("hash", requestHash), UUID.class);
+		return !inserted.isEmpty();
+	}
+
+	/** The reservation stored under a user's idempotency key, with its request hash. */
+	public Optional<Keyed> findByKey(String userId, String idempotencyKey) {
+		return jdbc.query("""
+				SELECT id, show_id, user_id, seats, amount_paise, status, request_hash
+				FROM reservations WHERE user_id = :user AND idempotency_key = :key
+				""", new MapSqlParameterSource().addValue("user", userId).addValue("key", idempotencyKey),
+				(rs, i) -> new Keyed(new Reservation(rs.getObject("id", UUID.class),
+						rs.getObject("show_id", UUID.class), rs.getString("user_id"),
+						List.of((String[]) rs.getArray("seats").getArray()), rs.getLong("amount_paise"),
+						rs.getString("status")), rs.getString("request_hash")))
+			.stream()
+			.findFirst();
+	}
+
+	/**
+	 * B2: adds {@code seats} to the user's count for the show, only if the result stays within the
+	 * limit. ON CONFLICT DO UPDATE takes the counter's row lock and re-evaluates the WHERE against
+	 * the latest committed value, so concurrent requests from one user are serialised here.
+	 * @return true if the quota was claimed
+	 */
+	public boolean claimQuota(UUID showId, String userId, int seats, int limit) {
+		List<Integer> held = jdbc.queryForList("""
+				INSERT INTO user_show_counts (show_id, user_id, held) VALUES (:show, :user, :n)
+				ON CONFLICT (show_id, user_id) DO UPDATE
+				  SET held = user_show_counts.held + EXCLUDED.held
+				  WHERE user_show_counts.held + EXCLUDED.held <= :limit
+				RETURNING held
+				""", new MapSqlParameterSource().addValue("show", showId)
+			.addValue("user", userId)
+			.addValue("n", seats)
+			.addValue("limit", limit), Integer.class);
+		return !held.isEmpty();
 	}
 
 	/**
@@ -66,6 +110,9 @@ public class ReservationRepository {
 
 	private static MapSqlParameterSource seatParams(UUID showId, List<String> labels) {
 		return new MapSqlParameterSource().addValue("show", showId).addValue("labels", PgArrays.text(labels));
+	}
+
+	public record Keyed(Reservation reservation, String requestHash) {
 	}
 
 	public record SeatState(String label, SeatStatus status) {

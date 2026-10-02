@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.iamtripathi25.bookify.error.SeatTakenException;
 import com.iamtripathi25.bookify.reservation.Reservation;
 import com.iamtripathi25.bookify.reservation.ReservationTxService;
+import com.iamtripathi25.bookify.reservation.ReserveResult;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -73,6 +74,92 @@ class ConcurrencyIT extends ApiTestSupport {
 		assertInvariants(show);
 	}
 
+	@Test
+	void idempotencyStormBooksOnce() throws Exception {
+		String show = createShow(List.of("A1", "A2"), 25000, 4);
+		String user = token("storm-user");
+		String key = newKey();
+
+		List<ResponseEntity<JsonNode>> results = race(20, i -> reserve(show, user, List.of("A1"), key));
+
+		assertThat(results.stream().filter(r -> r.getStatusCode().value() == 201)).hasSize(1);
+		assertThat(results.stream().filter(r -> r.getStatusCode().value() == 200)).hasSize(19);
+		assertThat(results.stream().map(r -> r.getBody().get("reservation_id").asText()).distinct()).hasSize(1);
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM reservations WHERE user_id = 'storm-user'",
+				Integer.class)).isEqualTo(1);
+		assertInvariants(show);
+	}
+
+	@Test
+	void keyReuseStormWithDifferentSeatsBooksOnce() throws Exception {
+		String show = createShow(List.of("A1", "A2"), 25000, 4);
+		String user = token("reuse-user");
+		String key = newKey();
+
+		// Half the requests want A1, half want A2, all under one key.
+		List<ResponseEntity<JsonNode>> results = race(20,
+				i -> reserve(show, user, List.of(i % 2 == 0 ? "A1" : "A2"), key));
+
+		List<ResponseEntity<JsonNode>> created = results.stream()
+			.filter(r -> r.getStatusCode().value() == 201)
+			.toList();
+		assertThat(created).hasSize(1);
+		JsonNode winner = created.get(0).getBody();
+		for (ResponseEntity<JsonNode> r : results) {
+			int status = r.getStatusCode().value();
+			if (status == 200) {
+				// Only the winner's own body can replay.
+				assertThat(r.getBody().get("reservation_id").asText()).isEqualTo(winner.get("reservation_id").asText());
+			}
+			else if (status != 201) {
+				assertError(r, 409, "IDEMPOTENCY_KEY_REUSED");
+			}
+		}
+		JsonNode state = get("/shows/" + show, user).getBody();
+		assertThat(state.at("/counts/confirmed").asInt()).isEqualTo(1);
+		assertInvariants(show);
+	}
+
+	@Test
+	void perUserLimitHoldsUnderConcurrency() throws Exception {
+		List<String> seats = IntStream.rangeClosed(1, 10).mapToObj(i -> "L" + i).toList();
+		String show = createShow(seats, 100, 4);
+		String user = token("limit-user");
+
+		List<ResponseEntity<JsonNode>> results = race(10,
+				i -> reserve(show, user, List.of(seats.get(i)), newKey()));
+
+		assertThat(results.stream().filter(r -> r.getStatusCode().value() == 201)).hasSize(4);
+		results.stream()
+			.filter(r -> r.getStatusCode().value() != 201)
+			.forEach(r -> assertError(r, 409, "PER_USER_LIMIT"));
+		Integer owned = jdbc.queryForObject(
+				"SELECT count(*) FROM seats WHERE show_id = ?::uuid AND user_id = 'limit-user'", Integer.class, show);
+		Integer held = jdbc.queryForObject(
+				"SELECT held FROM user_show_counts WHERE show_id = ?::uuid AND user_id = 'limit-user'", Integer.class,
+				show);
+		assertThat(owned).isEqualTo(4);
+		assertThat(held).isEqualTo(4);
+		assertInvariants(show);
+	}
+
+	@Test
+	void multiSeatRequestsRespectTheLimitUnderConcurrency() throws Exception {
+		List<String> seats = IntStream.rangeClosed(1, 12).mapToObj(i -> "M" + i).toList();
+		String show = createShow(seats, 100, 4);
+		String user = token("multi-limit-user");
+
+		// Six parallel 2-seat requests against a limit of 4: exactly two can succeed.
+		List<ResponseEntity<JsonNode>> results = race(6,
+				i -> reserve(show, user, seats.subList(i * 2, i * 2 + 2), newKey()));
+
+		assertThat(results.stream().filter(r -> r.getStatusCode().value() == 201)).hasSize(2);
+		results.stream()
+			.filter(r -> r.getStatusCode().value() != 201)
+			.forEach(r -> assertError(r, 409, "PER_USER_LIMIT"));
+		assertInvariants(show);
+	}
+
 	/**
 	 * The HTTP races above are mostly decided by the lock-free pre-check. These call the write
 	 * transaction directly, so every racer reaches the row locks and the guarded update.
@@ -85,9 +172,9 @@ class ConcurrencyIT extends ApiTestSupport {
 
 		List<Object> outcomes = raceTx(racers, i -> tx.reserve(
 				new Reservation(UUID.randomUUID(), showId, "lock-" + i, List.of("A12"), 100, Reservation.CONFIRMED),
-				newKey(), "hash"));
+				newKey(), "hash", 4));
 
-		assertThat(outcomes.stream().filter(Reservation.class::isInstance)).hasSize(1);
+		assertThat(outcomes.stream().filter(ReserveResult.class::isInstance)).hasSize(1);
 		assertThat(outcomes.stream().filter(SeatTakenException.class::isInstance)).hasSize(racers - 1);
 		assertInvariants(show);
 	}
@@ -105,12 +192,12 @@ class ConcurrencyIT extends ApiTestSupport {
 			Collections.rotate(mine, i);
 			return tx.reserve(
 					new Reservation(UUID.randomUUID(), showId, "order-" + i, mine, 400, Reservation.CONFIRMED),
-					newKey(), "hash");
+					newKey(), "hash", 4);
 		});
 
-		assertThat(outcomes).allMatch(o -> o instanceof Reservation || o instanceof SeatTakenException,
+		assertThat(outcomes).allMatch(o -> o instanceof ReserveResult || o instanceof SeatTakenException,
 				"only a win or SEAT_TAKEN, never a deadlock");
-		assertThat(outcomes.stream().filter(Reservation.class::isInstance)).hasSize(1);
+		assertThat(outcomes.stream().filter(ReserveResult.class::isInstance)).hasSize(1);
 		assertInvariants(show);
 	}
 

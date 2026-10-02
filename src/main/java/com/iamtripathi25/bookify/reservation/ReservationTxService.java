@@ -2,7 +2,10 @@ package com.iamtripathi25.bookify.reservation;
 
 import java.util.List;
 
+import com.iamtripathi25.bookify.error.IdempotencyMismatchException;
+import com.iamtripathi25.bookify.error.PerUserLimitException;
 import com.iamtripathi25.bookify.error.SeatTakenException;
+import com.iamtripathi25.bookify.reservation.ReservationRepository.Keyed;
 import com.iamtripathi25.bookify.reservation.ReservationRepository.SeatState;
 import com.iamtripathi25.bookify.show.SeatStatus;
 import org.springframework.stereotype.Service;
@@ -10,9 +13,11 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Phase B: the only place seats change hands. Lock order is reservation row, then seats in
- * ascending label order. Domain exceptions are thrown out of the method so the whole transaction
- * rolls back; nothing of a declined attempt is left behind.
+ * Phase B: the only place seats change hands. Every writer takes its locks in one global order:
+ * the reservation's key (B1), then the user's counter (B2), then seats in ascending label order
+ * (B3). Domain exceptions are thrown out of the method so the whole transaction rolls back: a
+ * declined attempt leaves no reservation row, no quota and no seat behind, and a retry with the
+ * same key simply tries again.
  */
 @Service
 public class ReservationTxService {
@@ -24,11 +29,24 @@ public class ReservationTxService {
 	}
 
 	@Transactional(isolation = Isolation.READ_COMMITTED)
-	public Reservation reserve(Reservation reservation, String idempotencyKey, String requestHash) {
+	public ReserveResult reserve(Reservation reservation, String idempotencyKey, String requestHash, int perUserLimit) {
 		List<String> labels = reservation.seats();
 
-		// B1: the reservation row.
-		repository.insert(reservation, idempotencyKey, requestHash);
+		// B1: claim the idempotency key. Never catch DuplicateKeyException here instead: Postgres has
+		// already aborted the transaction by then. ON CONFLICT reports the conflict without an error.
+		if (!repository.claim(reservation, idempotencyKey, requestHash)) {
+			// A twin committed first; under READ COMMITTED this new statement sees it.
+			Keyed twin = repository.findByKey(reservation.userId(), idempotencyKey).orElseThrow();
+			if (!twin.requestHash().equals(requestHash)) {
+				throw new IdempotencyMismatchException();
+			}
+			return ReserveResult.replayed(twin.reservation());
+		}
+
+		// B2: claim the per-user quota.
+		if (!repository.claimQuota(reservation.showId(), reservation.userId(), labels.size(), perUserLimit)) {
+			throw new PerUserLimitException(perUserLimit);
+		}
 
 		// B3: lock the seats in label order; re-check status against the latest committed rows.
 		List<String> taken = repository.lockSeats(reservation.showId(), labels)
@@ -45,7 +63,7 @@ public class ReservationTxService {
 		if (updated != labels.size()) {
 			throw new SeatTakenException(labels);
 		}
-		return reservation;
+		return ReserveResult.created(reservation);
 	}
 
 }

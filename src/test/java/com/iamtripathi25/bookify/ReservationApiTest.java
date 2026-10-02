@@ -80,6 +80,76 @@ class ReservationApiTest extends ApiTestSupport {
 	}
 
 	@Test
+	void retryWithTheSameKeyReplaysTheOriginal() {
+		String show = createShow(List.of("A1", "A2", "A3"), 100, 4);
+		String user = token("u-1");
+		String key = newKey();
+		ResponseEntity<JsonNode> first = reserve(show, user, List.of("A1", "A2"), key);
+		assertThat(first.getStatusCode().value()).isEqualTo(201);
+
+		// Same seats in a different order is the same request.
+		ResponseEntity<JsonNode> retry = reserve(show, user, List.of("A2", "A1"), key);
+		assertThat(retry.getStatusCode().value()).isEqualTo(200);
+		assertThat(retry.getBody()).isEqualTo(first.getBody());
+
+		JsonNode state = get("/shows/" + show, user).getBody();
+		assertThat(state.at("/counts/confirmed").asInt()).isEqualTo(2);
+		assertInvariants(show);
+	}
+
+	@Test
+	void sameKeyWithDifferentSeatsIs409AndChangesNothing() {
+		String show = createShow(List.of("A1", "A2"), 100, 4);
+		String user = token("u-1");
+		String key = newKey();
+		assertThat(reserve(show, user, List.of("A1"), key).getStatusCode().value()).isEqualTo(201);
+
+		assertError(reserve(show, user, List.of("A2"), key), 409, "IDEMPOTENCY_KEY_REUSED");
+		assertError(reserve(show, user, List.of("A1", "A2"), key), 409, "IDEMPOTENCY_KEY_REUSED");
+		assertThat(get("/shows/" + show, user).getBody().at("/counts/available").asInt()).isEqualTo(1);
+
+		// The same key on another show is a different request too.
+		String other = createShow(List.of("A1"), 100, 4);
+		assertError(reserve(other, user, List.of("A1"), key), 409, "IDEMPOTENCY_KEY_REUSED");
+		assertInvariants(show);
+		assertInvariants(other);
+	}
+
+	@Test
+	void keysAreScopedPerUser() {
+		String show = createShow(List.of("A1", "A2"), 100, 4);
+		String key = newKey();
+		assertThat(reserve(show, token("u-1"), List.of("A1"), key).getStatusCode().value()).isEqualTo(201);
+		assertThat(reserve(show, token("u-2"), List.of("A2"), key).getStatusCode().value()).isEqualTo(201);
+	}
+
+	@Test
+	void aDeclinedAttemptLeavesNothingBehind() {
+		String show = createShow(List.of("A1", "A2"), 100, 4);
+		assertThat(reserve(show, token("u-1"), List.of("A1"), newKey()).getStatusCode().value()).isEqualTo(201);
+
+		// u-2's first attempt loses A1. The key was not stored, so it can be used again for A2.
+		String user = token("u-2");
+		String key = newKey();
+		assertError(reserve(show, user, List.of("A1"), key), 409, "SEAT_TAKEN");
+		assertThat(reserve(show, user, List.of("A2"), key).getStatusCode().value()).isEqualTo(201);
+		assertInvariants(show);
+	}
+
+	@Test
+	void perUserLimitCountsAcrossReservations() {
+		String show = createShow(List.of("A1", "A2", "A3", "A4"), 100, 3);
+		String user = token("u-1");
+		assertThat(reserve(show, user, List.of("A1", "A2"), newKey()).getStatusCode().value()).isEqualTo(201);
+		assertError(reserve(show, user, List.of("A3", "A4"), newKey()), 409, "PER_USER_LIMIT");
+		assertThat(reserve(show, user, List.of("A3"), newKey()).getStatusCode().value()).isEqualTo(201);
+		assertError(reserve(show, user, List.of("A4"), newKey()), 409, "PER_USER_LIMIT");
+		// Another user is unaffected.
+		assertThat(reserve(show, token("u-2"), List.of("A4"), newKey()).getStatusCode().value()).isEqualTo(201);
+		assertInvariants(show);
+	}
+
+	@Test
 	void invalidReservationsAre4xx() {
 		String show = createShow(List.of("A1"), 100, 4);
 		String user = token("u-1");

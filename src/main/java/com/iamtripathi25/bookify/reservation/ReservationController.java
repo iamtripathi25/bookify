@@ -22,14 +22,25 @@ public class ReservationController {
 		this.reservations = reservations;
 	}
 
-	/** The user is the token's subject; the body has no user field to spoof. */
+	/**
+	 * The user is the token's subject; the body has no user field to spoof. 201 for a new booking,
+	 * 200 when the idempotency key already booked (the original reservation, in its current state).
+	 */
 	@PostMapping("/shows/{showId}/reserve")
 	ResponseEntity<Reservation> reserve(@PathVariable UUID showId, @AuthenticationPrincipal Jwt jwt,
 			@RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
 			@RequestBody ReserveRequest request) {
-		Reservation reservation = reservations.reserve(showId, jwt.getSubject(), request.seats(), idempotencyKey,
+		ReserveResult result = reservations.reserve(showId, jwt.getSubject(), request.seats(), idempotencyKey,
 				request.idempotencyKey());
-		return ResponseEntity.created(URI.create("/reservations/" + reservation.id())).body(reservation);
+		Reservation reservation = result.reservation();
+		if (result.replay()) {
+			return ResponseEntity.ok().location(location(reservation)).body(reservation);
+		}
+		return ResponseEntity.created(location(reservation)).body(reservation);
+	}
+
+	private static URI location(Reservation reservation) {
+		return URI.create("/reservations/" + reservation.id());
 	}
 
 	record ReserveRequest(List<String> seats, String idempotencyKey) {

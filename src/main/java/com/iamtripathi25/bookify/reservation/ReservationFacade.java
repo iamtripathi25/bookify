@@ -7,6 +7,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -15,10 +16,12 @@ import java.util.stream.Collectors;
 
 import com.iamtripathi25.bookify.db.SqlStates;
 import com.iamtripathi25.bookify.error.ContentionException;
+import com.iamtripathi25.bookify.error.IdempotencyMismatchException;
 import com.iamtripathi25.bookify.error.InvalidRequestException;
 import com.iamtripathi25.bookify.error.PerUserLimitException;
 import com.iamtripathi25.bookify.error.SeatTakenException;
 import com.iamtripathi25.bookify.error.UnknownSeatException;
+import com.iamtripathi25.bookify.reservation.ReservationRepository.Keyed;
 import com.iamtripathi25.bookify.reservation.ReservationRepository.SeatState;
 import com.iamtripathi25.bookify.show.SeatStatus;
 import com.iamtripathi25.bookify.show.Show;
@@ -60,7 +63,7 @@ public class ReservationFacade {
 	 * Books all requested seats or none (all-or-nothing).
 	 * @param headerKey the Idempotency-Key header; wins over the body key when both are present
 	 */
-	public Reservation reserve(UUID showId, String userId, List<String> requestedSeats, String headerKey,
+	public ReserveResult reserve(UUID showId, String userId, List<String> requestedSeats, String headerKey,
 			String bodyKey) {
 		// A1: validate and normalise.
 		String key = idempotencyKey(headerKey, bodyKey);
@@ -82,8 +85,16 @@ public class ReservationFacade {
 			throw new UnknownSeatException(unknown);
 		}
 
-		// A4: idempotency lookup goes here, after A3 and never before it: a booking that A3 saw
-		// committed is then visible to A4, so its retry replays instead of being declined.
+		// A4: idempotency lookup. It must come after A3, never before: a reservation commits together
+		// with its seats, so any booking A3 saw is visible to this later read, and a retry of a
+		// successful booking replays instead of being declined as seat-taken.
+		Optional<Keyed> existing = repository.findByKey(userId, key);
+		if (existing.isPresent()) {
+			if (!existing.get().requestHash().equals(requestHash)) {
+				throw new IdempotencyMismatchException();
+			}
+			return ReserveResult.replayed(existing.get().reservation());
+		}
 
 		// A5: decline early if anything is already gone, without opening a write transaction.
 		List<String> taken = labels.stream().filter(l -> current.get(l) != SeatStatus.AVAILABLE).toList();
@@ -95,10 +106,10 @@ public class ReservationFacade {
 		long amount = Math.multiplyExact(show.pricePaise(), labels.size());
 		Reservation reservation = new Reservation(UUID.randomUUID(), showId, userId, labels, amount,
 				Reservation.CONFIRMED);
-		return withRetry(() -> tx.reserve(reservation, key, requestHash));
+		return withRetry(() -> tx.reserve(reservation, key, requestHash, show.perUserLimit()));
 	}
 
-	private static Reservation withRetry(Supplier<Reservation> attempt) {
+	private static ReserveResult withRetry(Supplier<ReserveResult> attempt) {
 		for (int retry = 0;; retry++) {
 			try {
 				return attempt.get();
