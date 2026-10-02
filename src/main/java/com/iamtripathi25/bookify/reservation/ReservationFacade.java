@@ -160,7 +160,10 @@ public class ReservationFacade {
 		return reservation;
 	}
 
-	/** The metrics reason for a decline, or null for errors that aren't declines (400, 404, bugs). */
+	/**
+	 * The metrics reason for a decline, or null for errors that aren't declines (400, 404, an
+	 * unreachable database, bugs).
+	 */
 	private static String declineReason(RuntimeException ex) {
 		if (ex instanceof SeatTakenException) {
 			return ReservationMetrics.SEAT_TAKEN;

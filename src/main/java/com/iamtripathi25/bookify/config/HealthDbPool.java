@@ -39,6 +39,8 @@ public class HealthDbPool implements DisposableBean {
 		config.setInitializationFailTimeout(-1);
 		config.addDataSourceProperty("connectTimeout", String.valueOf(timeoutSeconds));
 		config.addDataSourceProperty("socketTimeout", String.valueOf(timeoutSeconds));
+		// Bounds the login handshake too, which can stall when packets are dropped rather than refused.
+		config.addDataSourceProperty("loginTimeout", String.valueOf(timeoutSeconds));
 		this.pool = new HikariDataSource(config);
 	}
 

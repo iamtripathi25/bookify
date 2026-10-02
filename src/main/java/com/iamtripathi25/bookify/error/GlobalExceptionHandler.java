@@ -39,11 +39,20 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	}
 
 	/**
-	 * Lock/statement timeouts, deadlocks after retries and pool exhaustion are contention, not bugs.
-	 * Any other database failure stays a 500.
+	 * An unreachable database is a 503 (refuse, don't guess). Lock/statement timeouts, deadlocks
+	 * after retries and pool exhaustion on a healthy database are contention (409), not bugs. Any
+	 * other database failure stays a 500.
 	 */
 	@ExceptionHandler({ DataAccessException.class, TransactionException.class })
 	ResponseEntity<ErrorBody> handleDataAccess(RuntimeException ex) {
+		if (SqlStates.isUnavailable(ex)) {
+			log.warn("Database unavailable: {} (sqlstate={})", ex.getClass().getSimpleName(), SqlStates.sqlState(ex));
+			DatabaseUnavailableException unavailable = new DatabaseUnavailableException();
+			LogContext.outcomeIfAbsent(unavailable.code().toLowerCase());
+			return ResponseEntity.status(unavailable.status())
+				.header(HttpHeaders.RETRY_AFTER, String.valueOf(DatabaseUnavailableException.RETRY_AFTER_SECONDS))
+				.body(ErrorBody.of(unavailable.code(), unavailable.getMessage()));
+		}
 		if (SqlStates.isContention(ex)) {
 			log.warn("Contention: {} (sqlstate={})", ex.getClass().getSimpleName(), SqlStates.sqlState(ex));
 			return handleApi(new ContentionException());

@@ -25,6 +25,13 @@ spring:
       # Per connection rather than ALTER ROLE (managed Postgres may not allow it).
       # A lock wait past 3s means contention -> 409; statement_timeout stays above it.
       connection-init-sql: SET lock_timeout = '3s'; SET statement_timeout = '30s'
+      data-source-properties:
+        # Client-side bounds for a network that drops packets. statement_timeout can't help when the
+        # server can't reach us; without these a query on a stalled connection waits forever.
+        # socketTimeout sits just above statement_timeout so it never cuts a legitimate query; the
+        # failure is a connection error, which maps to 503 (nothing booked; same-key retry is safe).
+        connectTimeout: 5
+        socketTimeout: 35
   jackson:
     # The API speaks snake_case (price_paise, reservation_id, ...).
     property-naming-strategy: SNAKE_CASE

@@ -1,5 +1,7 @@
 # Bookify — Write-up
 
+Bookify sells assigned seats under a stampede. Every guarantee (one buyer per seat, a per-user limit, exactly-once retries) is decided inside a single Postgres transaction using row locks, conditional writes and unique constraints. Nothing that matters for correctness lives in application memory. This document explains each mechanism, how it was tested, and what I'd change next.
+
 ## The atomic decision
 
 Postgres decides who gets a seat, inside one READ COMMITTED transaction. Nothing is decided in application memory, so any number of app instances can run behind a load balancer.
@@ -24,7 +26,7 @@ The schema backs this up. A seat is one row keyed by `(show_id, label)`, so ther
 
 **A cheap pre-check keeps the pool free.** Before opening the write transaction, the service reads the requested seats without locking. If any is already gone, it declines straight away. During a hot-seat storm, almost every loser is turned away after one short read and never waits for a row lock. The pre-check only ever declines; the decision to sell is always made under the lock.
 
-**Timeouts.** Each connection sets `lock_timeout = 3s` and `statement_timeout = 30s`. A lock wait past 3 seconds means heavy contention, and the request gets 409 `CONTENTION`. Pool exhaustion maps to the same code. Unexpected errors stay 500 on purpose, so bugs aren't hidden as declines.
+**Timeouts.** Each connection sets `lock_timeout = 3s` and `statement_timeout = 30s`. A lock wait past 3 seconds means heavy contention, and the request gets 409 `CONTENTION`. So does a healthy pool too busy to hand out a connection within 60 seconds. An unreachable database is different: it's a 503 (see the next section). Unexpected errors stay 500 on purpose, so bugs aren't hidden as declines.
 
 **How it's tested.** Integration tests run against real Postgres 16 over HTTP:
 - 500 users race for one seat: exactly one 201, and every loser gets 409 `SEAT_TAKEN`.
@@ -109,11 +111,32 @@ Reservation row, then user counter, then seats by label: the same order reserve 
 
 **Adding a timed hold later.** The schema already has the `held` status and counts it in the show state. A hold would add `held_until` to reservations and a scheduled sweeper that runs this same cancel transaction for expired holds. Reserve would then also accept expired holds as available when it locks the seats.
 
+## Consistency vs availability under a partition
+
+**Bookify chooses consistency.** There is one Postgres primary, and it is the only place a seat can be sold. If the app can't reach it, the app refuses to sell rather than guess. It has no local cache, queue or fallback that could accept a booking optimistically. Accepting a booking it can't make durable would risk selling one seat twice, and an oversold seat is worse than a "try again".
+
+**What happens, measured.** I simulated a partition by freezing the database container, so packets go nowhere. I also stopped it outright, which refuses connections:
+
+| | Frozen (partition) | Stopped |
+| --- | --- | --- |
+| Readiness | 503 in 2.0s, so the load balancer stops routing here | 503 in 2.0s |
+| `POST /reserve` | 503 `DATABASE_UNAVAILABLE`, `Retry-After: 5`, after 35s | 503 in 5ms |
+| Liveness | 200: the process is fine, so it isn't restarted | 200 |
+| After recovery | readiness 200 within about 1s; same-key retry books normally | same |
+
+Two fixes came out of this test. Readiness took **12 seconds** to fail during a partition, because a connection attempt stalled through several driver timeouts in a row. The check now has a hard 2-second deadline. And a query on a stalled connection could wait **forever**: Postgres's `statement_timeout` can't fire when the server can't reach the client. Connections now have a 35-second socket timeout, just above `statement_timeout`, so it never cuts a legitimate query.
+
+**503 for an outage, 409 for load.** A busy pool on a healthy database is load: 409 `CONTENTION`. A connection failure (SQLSTATE class `08`) or a database shutting down (`57P01`–`57P03`) is an outage: 503 `DATABASE_UNAVAILABLE`. The two are told apart because the pool only attaches a connection error when creating a connection actually failed. Under the burst, the database is up, so the zero-5xx property is unaffected.
+
+**Ambiguous outcomes are what idempotency keys are for.** A partition can hit after the commit but before the response reaches the client, so the client can't know whether it booked. That happened in testing: a request stalled on a frozen connection, the proxy gave up, then the database came back and the commit completed. Retrying with the same key returned 200 with the booking, rather than booking twice or wrongly reporting the seat as taken. Clients should always retry with the same key after a timeout or a 503.
+
+**What stays available.** Nothing that needs the database. In a larger deployment, `GET /shows/{id}` could be served from a read replica with slightly stale counts, which would be AP for reads only. Writes stay on the single primary. For failover without losing confirmed bookings, the primary would replicate synchronously to a standby (RPO 0). That trades a little write latency for never losing a sale.
+
 ## Observability
 
 The aim is to see from the outside, while a burst is running, that the service is behaving correctly, not just that it is up.
 
-**Health.** Liveness never touches the database. Readiness runs `SELECT 1` on a separate two-connection pool with 2-second timeouts, so it never waits behind reservation traffic and fails closed within about 2 seconds when Postgres is unreachable.
+**Health.** Liveness never touches the database. Readiness runs `SELECT 1` on a separate two-connection pool, so it never waits behind reservation traffic. A hard 2-second deadline makes it fail closed in 2 seconds whether Postgres refuses connections or silently drops packets.
 
 **Metrics that reconcile.** Two kinds of metrics check each other:
 - **Counters from the request path:** confirmed, declined by reason, replayed, cancelled. They are incremented only after the transaction has committed, so a rolled-back attempt never counts as confirmed. Every counter for a show is registered at 0 when the show is created. That way Prometheus sees a zero before the first booking, and a burst's first second isn't lost.
@@ -171,12 +194,40 @@ I used Claude Code (Claude Opus) throughout. The split:
 - Spring Boot 3.5 instead of the 4.x default. When the version change broke dependencies, I had the AI map the Boot 4 starter names back to their 3.5 equivalents.
 - I questioned the open admin-token minting from the original plan. After asking for the security best practice, I chose the tightened version: open `USER` minting, admin gated by a private key, `iss`/`aud` validation and a one-hour token lifetime.
 - I keep control of the git history: the AI never stages, commits or pushes.
+- The observability setup. I chose a local Prometheus and Grafana stack, then asked for logs in Grafana too (Loki), and for exact numbers on the dashboard instead of rounded ones.
+- I separated what the graders need from what's nice to have. That led to keeping the Grafana stack local, for watching bursts and making the recording, instead of deploying it.
+- After the partition test showed an outage returning 409 `CONTENTION`, I chose to make it a 503.
 
 **Decided by the AI (reviewed by me):**
 - Making the readiness pool a plain component rather than a second `DataSource` bean. A second bean would have switched off Spring Boot's auto-configured main pool.
 - A `seat_no` column, so seats display in creation order (`A1, A2, A10`) rather than alphabetical order.
 - `logstash-logback-encoder` 8.1 rather than 9.0, because 9.0 needs Jackson 3.
+- Merging the seat pre-check and the idempotency lookup into one statement.
+- The partition fixes: a hard deadline on readiness, a socket timeout on database connections, and treating Postgres shutdown states as "unavailable". All three were found by testing the outage rather than assuming the timeouts worked.
+- Loki's configuration for Grafana's Logs Drilldown, after the pattern endpoint returned 404 with the default config.
 - Plain HTTP on local Caddy instead of HTTPS, because Java's HTTP client rejects Caddy's self-signed certificate.
 - The time-range formula on the dashboard. Prometheus's `increase()` misreported bursts on new series, so the AI tested alternatives against known response counts until the numbers matched exactly.
-- Race tests that call the write transaction directly, not just over HTTP.
-- The load-test diagnosis: comparing client latency with the app's server-side metrics, finding Caddy's port exhaustion from its error logs, and isolating the rare truncated responses by removing one network hop at a time. Over HTTP, the pre-check turns most losers away before they reach the row locks, so the HTTP tests alone would barely exercise the locking.
+- Race tests that call the write transaction directly, not just over HTTP. Over HTTP, the pre-check turns most losers away before they reach the row locks, so the HTTP tests alone would barely exercise the locking.
+- The load-test diagnosis: comparing client latency with the app's server-side metrics, finding Caddy's port exhaustion from its error logs, and isolating the rare truncated responses by removing one network hop at a time.
+
+## What I'd do next
+
+**Product**
+- **A timed hold and a payment step:** hold for, say, 10 minutes, then confirm on payment. The schema already has the `held` status. This adds a sweeper that runs the cancel transaction on expired holds, and a confirm step that must lose cleanly to it.
+- **Seat maps and adjacent seats.** "Two seats together" needs one transaction that picks and locks a block, not two independent requests.
+
+**Reliability**
+- **A circuit breaker for outages.** Today a request during a partition waits up to 35–60 seconds before its 503. A breaker could reject immediately once the database is known to be down. It needs care: a breaker that trips under burst load would itself cause 5xx.
+- **Per-user rate limiting at the edge**, so one client can't take most of the database pool during an on-sale.
+- **Schema migrations with Flyway.** `schema.sql` with `IF NOT EXISTS` was right for one schema version; the first change after deploy is the moment to switch.
+- **Clean up idempotency keys** after a retention window, for example by archiving reservations older than the show.
+
+**Scale and deployment**
+- **ECS Fargate or Kubernetes behind a load balancer, with RDS Multi-AZ.** Several app instances (the app is stateless), synchronous replication to a standby, and read replicas for `GET /shows`.
+- **Partition the `seats` table by show** once there are many shows, so each on-sale touches its own index.
+- **An outbox for downstream events** (booking confirmed or cancelled), written in the same transaction, for payments, notifications and analytics.
+- **Load tests on production-shaped infrastructure**, from more than one client machine, to find the real limits rather than a laptop's.
+
+**Security**
+- **A real identity provider** (Auth0, Keycloak, Cognito) with RS256/JWKS, instead of the test-token endpoint.
+- **Drop the `show` label from counters** once there are many shows, keeping it only on the seat gauges for shows on sale.
