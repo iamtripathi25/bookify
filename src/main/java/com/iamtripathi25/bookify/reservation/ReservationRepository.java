@@ -1,7 +1,9 @@
 package com.iamtripathi25.bookify.reservation;
 
+import java.sql.Array;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -22,11 +24,34 @@ public class ReservationRepository {
 		this.jdbc = jdbc;
 	}
 
-	/** Phase A pre-check: a plain read, no locks. Unknown labels are simply absent. */
-	public List<SeatState> readSeats(UUID showId, List<String> labels) {
-		return jdbc.query("""
-				SELECT label, status FROM seats WHERE show_id = :show AND label = ANY(:labels)
-				""", seatParams(showId, labels), SeatState.MAPPER);
+	/**
+	 * Phase A pre-check in one round trip, no locks: the requested seats' states and any reservation
+	 * already stored under the user's idempotency key. Both come from the same statement snapshot,
+	 * so a booking that shows up in the seat states is guaranteed to show up as the key's
+	 * reservation too (they commit together). Unknown labels are simply absent.
+	 */
+	public PreCheck preCheck(UUID showId, List<String> labels, String userId, String idempotencyKey) {
+		return jdbc.queryForObject("""
+				SELECT s.labels, s.statuses,
+				       r.id, r.show_id, r.user_id, r.seats, r.amount_paise, r.status, r.request_hash
+				FROM (SELECT array_agg(label ORDER BY label)  AS labels,
+				             array_agg(status ORDER BY label) AS statuses
+				      FROM seats WHERE show_id = :show AND label = ANY(:labels)) s
+				LEFT JOIN reservations r ON r.user_id = :user AND r.idempotency_key = :key
+				""", seatParams(showId, labels).addValue("user", userId).addValue("key", idempotencyKey), (rs, i) -> {
+			List<SeatState> seats = new ArrayList<>();
+			Array seatLabels = rs.getArray("labels");
+			if (seatLabels != null) {
+				String[] l = (String[]) seatLabels.getArray();
+				String[] st = (String[]) rs.getArray("statuses").getArray();
+				for (int j = 0; j < l.length; j++) {
+					seats.add(new SeatState(l[j], SeatStatus.fromDb(st[j])));
+				}
+			}
+			Optional<Keyed> existing = rs.getObject("id") == null ? Optional.empty()
+					: Optional.of(new Keyed(mapReservation(rs), rs.getString("request_hash")));
+			return new PreCheck(seats, existing);
+		});
 	}
 
 	/**
@@ -156,6 +181,9 @@ public class ReservationRepository {
 		return new Reservation(rs.getObject("id", UUID.class), rs.getObject("show_id", UUID.class),
 				rs.getString("user_id"), List.of((String[]) rs.getArray("seats").getArray()),
 				rs.getLong("amount_paise"), rs.getString("status"));
+	}
+
+	public record PreCheck(List<SeatState> seats, Optional<Keyed> existing) {
 	}
 
 	public record Keyed(Reservation reservation, String requestHash) {

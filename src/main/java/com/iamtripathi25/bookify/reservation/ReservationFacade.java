@@ -7,7 +7,6 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -25,6 +24,7 @@ import com.iamtripathi25.bookify.error.PerUserLimitException;
 import com.iamtripathi25.bookify.error.SeatTakenException;
 import com.iamtripathi25.bookify.error.UnknownSeatException;
 import com.iamtripathi25.bookify.reservation.ReservationRepository.Keyed;
+import com.iamtripathi25.bookify.reservation.ReservationRepository.PreCheck;
 import com.iamtripathi25.bookify.reservation.ReservationRepository.SeatState;
 import com.iamtripathi25.bookify.show.SeatStatus;
 import com.iamtripathi25.bookify.show.Show;
@@ -111,24 +111,25 @@ public class ReservationFacade {
 			throw new PerUserLimitException(show.perUserLimit());
 		}
 
-		// A3: lock-free read of the requested seats.
-		Map<String, SeatStatus> current = repository.readSeats(showId, labels)
+		// A3 + A4 in one statement: the seats' states and any reservation already stored under this
+		// key. The key lookup must never see an older snapshot than the seat read: a reservation commits
+		// together with its seats, so a booking the seat read saw must also be found by key, and a retry
+		// of a successful booking replays instead of being declined as seat-taken. One statement gives
+		// both the same snapshot (and halves the pool checkouts for the many requests declined here).
+		PreCheck pre = repository.preCheck(showId, labels, userId, key);
+		Map<String, SeatStatus> current = pre.seats()
 			.stream()
 			.collect(Collectors.toMap(SeatState::label, SeatState::status));
 		List<String> unknown = labels.stream().filter(l -> !current.containsKey(l)).toList();
 		if (!unknown.isEmpty()) {
 			throw new UnknownSeatException(unknown);
 		}
-
-		// A4: idempotency lookup. It must come after A3, never before: a reservation commits together
-		// with its seats, so any booking A3 saw is visible to this later read, and a retry of a
-		// successful booking replays instead of being declined as seat-taken.
-		Optional<Keyed> existing = repository.findByKey(userId, key);
-		if (existing.isPresent()) {
-			if (!existing.get().requestHash().equals(requestHash)) {
+		if (pre.existing().isPresent()) {
+			Keyed existing = pre.existing().get();
+			if (!existing.requestHash().equals(requestHash)) {
 				throw new IdempotencyMismatchException();
 			}
-			return ReserveResult.replayed(existing.get().reservation());
+			return ReserveResult.replayed(existing.reservation());
 		}
 
 		// A5: decline early if anything is already gone, without opening a write transaction.

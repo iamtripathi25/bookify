@@ -6,7 +6,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 41,
-  "version": 5,
+  "version": 6,
   "refresh": "5s",
   "time": {
     "from": "now-15m",
@@ -43,7 +43,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -99,7 +99,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -151,7 +151,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -203,7 +203,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -255,7 +255,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -691,7 +691,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "decimals": 0,
           "color": {
             "mode": "fixed",
@@ -753,7 +753,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -808,7 +808,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "locale",
           "thresholds": {
             "mode": "absolute",
             "steps": [

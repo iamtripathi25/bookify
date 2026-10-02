@@ -262,6 +262,79 @@ Declines are always 4xx. A 5xx means a bug.
 
 **Counting outcomes in a load test:** a seat raced by many users gets exactly one 201. If the winner retries, those retries are 200s, not extra 201s.
 
+## Burst test
+
+One command reproduces an on-sale stampede against any deployment and checks every correctness property from the outside. It needs only JDK 21+; there is no build step.
+
+```bash
+./burst.sh http://localhost:8080                               # local (compose)
+BOOKIFY_ADMIN_KEY=<admin key> ./burst.sh https://<live-url>    # deployed
+```
+
+It runs these steps against a fresh show of 1,000 seats (price 25000 paise, limit 4):
+
+1. **Tokens:** mints an admin and 2,000 users.
+2. **Hot-seat storm:** 500 users race for seat A12 at once.
+3. **Stampede:** about 20,000 requests, 80% aimed at 10 hot seats. 10% are retried with the same key and 2% reuse a key for a different seat. `GET /shows/{id}` is polled every 200ms throughout to check the invariant while it runs.
+4. **Limit storm:** one user sends 10 parallel requests on the limit-4 show.
+5. **Spoof checks:** a body `user_id` is ignored; another user's reservation can't be cancelled or read.
+6. **Report:** prints the outcome table and latency percentiles.
+7. **Reconciliation** against `GET /shows/{id}` and `/actuator/prometheus`:
+   - exactly one winner per hot seat
+   - zero 5xx
+   - the invariant holds
+   - confirmed seats equal the seats in 201 responses
+   - every metric equals the matching response count
+
+It exits 1 if any check fails.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--requests N` | 20000 | Stampede size |
+| `--users N` | 2000 | Distinct users |
+| `--hot-storm N` | 500 | Users racing for one seat |
+| `--concurrency N` | 1000 | Maximum requests in flight |
+| `--admin-key KEY` | `$BOOKIFY_ADMIN_KEY`, else the local default | Needed to create the show |
+| `--seed N` | random | Repeat a run exactly |
+
+Sample output (local compose stack, trimmed):
+
+```
+== Hot-seat storm: 500 users -> A12 ======================================
+  201                                1    0.2%  confirmed (new booking)
+  409 SEAT_TAKEN                   499   99.8%
+  ok  hot seat A12 has exactly one 201 (got 1)
+
+== All reserve requests ==================================================
+  200                               87    0.4%  idempotent replay (same key retried)
+  201                              713    3.5%  confirmed (new booking)
+  409 IDEMPOTENCY_KEY_REUSED        64    0.3%
+  409 PER_USER_LIMIT                 6    0.0%
+  409 SEAT_TAKEN                 19589   95.7%
+  total                          20459
+reserve latency (per request, at --concurrency in flight): p50=253.7ms p95=963.2ms p99=1505.9ms
+
+== Reconciliation ========================================================
+GET /shows: total=1000 available=285 held=0 confirmed=715
+  ok  available + held + confirmed == total_seats
+  ok  API confirmed (715) == seats in 201 responses (715)
+  ok  each stampede hot seat has at most one winner (10 of 10 sold)
+  ok  zero 5xx responses (got 0)
+  confirmed                          metric    715   responses    715   ok
+  replayed                           metric     87   responses     87   ok
+  declined:seat_taken                metric  19589   responses  19589   ok
+  ...
+== PASS ==================================================================
+```
+
+**Local figures** (MacBook, Docker Desktop with 10 CPUs; the burst client runs on the same machine, through Caddy):
+- About 3,400–4,900 reserve requests/s.
+- With 1,000 requests in flight: typical p50 about 200–250 ms, p95 about 570–960 ms, p99 about 0.8–1.5 s.
+- Zero 5xx over more than 30 full runs.
+- With 200 in flight: p50 about 25 ms, p99 about 85 ms.
+
+Latency at high concurrency is queueing for a database connection, by design: requests wait their turn instead of being rejected.
+
 ## Configuration
 
 All configuration comes from environment variables.

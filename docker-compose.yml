@@ -43,6 +43,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     ulimits:
       nofile: { soft: 65535, hard: 65535 }
+    sysctls:
+      # More local ports for upstream connections, and reuse of TIME_WAIT ones.
+      net.ipv4.ip_local_port_range: "1024 65535"
+      net.ipv4.tcp_tw_reuse: "1"
 
   # Optional metrics stack: docker compose --profile observability up
   prometheus:

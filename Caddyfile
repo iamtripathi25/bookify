@@ -5,6 +5,12 @@
 			# The edge must not cut requests that are queued for a DB connection.
 			read_timeout 120s
 			write_timeout 120s
+			# Keep enough idle upstream connections for a burst. With Caddy's small default, each
+			# burst opens and closes thousands of connections, the closed ones sit in TIME_WAIT, and
+			# the container runs out of local ports ("cannot assign requested address" -> 502).
+			keepalive 2m
+			keepalive_idle_conns 2048
+			keepalive_idle_conns_per_host 2048
 		}
 	}
 }

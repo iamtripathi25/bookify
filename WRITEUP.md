@@ -53,7 +53,7 @@ If two requests with the same key arrive together, the unique index lets one ins
 
 `ON CONFLICT` matters here. Catching a duplicate-key error instead wouldn't work: by the time the error arrives, Postgres has aborted the transaction.
 
-**Retries after the fact.** Before opening a write transaction, the service looks the key up. A match with the same hash returns the stored reservation in its current state with 200. That lookup deliberately runs after the seat pre-check: the reservation commits together with its seats, so if the pre-check saw a seat as taken by this booking, the lookup is guaranteed to see the booking too. A retry of a successful request therefore replays rather than being declined as seat-taken.
+**Retries after the fact.** Before opening a write transaction, the service looks the key up. A match with the same hash returns the stored reservation in its current state with 200. The lookup and the seat pre-check run in one statement, so they share a snapshot. The reservation commits together with its seats, so if the pre-check saw a seat as taken by this booking, the lookup is guaranteed to see the booking too. A retry of a successful request therefore replays rather than being declined as seat-taken.
 
 **Same key, different body.** A different hash (other seats, or another show) is 409 `IDEMPOTENCY_KEY_REUSED`, whether it's detected by the lookup or after waiting on the unique index. Nothing changes.
 
@@ -135,6 +135,18 @@ Two more raise a ticket rather than a page: requests queueing for a database con
 
 **Cardinality.** Metrics carry a `show` label. That's fine for a handful of shows during grading. With thousands of shows, I'd drop the label from counters, keep it only on the seat gauges, and limit those to shows currently on sale.
 
+## Load testing and tuning
+
+`./burst.sh` runs the graders' scenario against any URL: hot-seat storm, a 20,000-request stampede with retries and key reuse, limit storm and spoof checks. It then reconciles every response against the API and the metrics. Locally it passed more than 30 full runs with zero 5xx. Tuning was driven by measurements, and three findings changed the setup:
+
+- **A bigger pool is slower.** With 1,000 requests in flight, pools of 15 and 30 performed about the same, while 45 and 60 were noticeably slower. More connections means more contention inside Postgres, not more work done. The pool stays at 30. Requests queue for a connection (mean wait about 150 ms under the full burst) rather than failing.
+- **Measure the right thing.** Server-side timing from the app's own metrics (about 156 ms mean) showed the client's first latency figures (p50 of 2.7 s) were mostly the client queueing for its own in-flight slots. The burst script now times only the HTTP request.
+- **The local proxy ran out of ports.** After a few back-to-back bursts, Caddy returned a handful of 502s with `cannot assign requested address`. With its default small idle-connection pool, every burst opened and closed thousands of upstream connections, and the closed ones sat in TIME_WAIT until the container's ephemeral ports ran out. A large keep-alive pool and TIME_WAIT reuse fixed it. Afterwards Caddy reused about 980 connections, with no 502s in more than 30 runs.
+
+One local artefact remains. In about 600,000 requests through Caddy plus Docker Desktop's port forwarding, 3 responses arrived truncated at the client. In each case the server had handled the request correctly and counted it. The truncation didn't reproduce with either hop removed, and the hosted deploy has neither hop. The burst script still counts these as failures rather than hiding them.
+
+The two pre-transaction reads (seat states and the idempotency-key lookup) were also merged into one statement. Throughput barely moved, but it halves the pool checkouts for declined requests, and both reads now come from the same snapshot. That makes the "a booking the seat read saw is also found by key" argument hold by construction.
+
 ## Auth and the test-token endpoint
 
 **Identity.** The acting user is always the JWT `sub` claim. Request bodies have no `user_id` field, and unknown JSON fields are ignored, so a spoofed `user_id` in a body has no effect.
@@ -166,4 +178,5 @@ I used Claude Code (Claude Opus) throughout. The split:
 - `logstash-logback-encoder` 8.1 rather than 9.0, because 9.0 needs Jackson 3.
 - Plain HTTP on local Caddy instead of HTTPS, because Java's HTTP client rejects Caddy's self-signed certificate.
 - The time-range formula on the dashboard. Prometheus's `increase()` misreported bursts on new series, so the AI tested alternatives against known response counts until the numbers matched exactly.
-- Race tests that call the write transaction directly, not just over HTTP. Over HTTP, the pre-check turns most losers away before they reach the row locks, so the HTTP tests alone would barely exercise the locking.
+- Race tests that call the write transaction directly, not just over HTTP.
+- The load-test diagnosis: comparing client latency with the app's server-side metrics, finding Caddy's port exhaustion from its error logs, and isolating the rare truncated responses by removing one network hop at a time. Over HTTP, the pre-check turns most losers away before they reach the row locks, so the HTTP tests alone would barely exercise the locking.
