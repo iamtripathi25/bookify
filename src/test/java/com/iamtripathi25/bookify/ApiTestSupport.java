@@ -62,6 +62,10 @@ public abstract class ApiTestSupport {
 		return post("/shows/" + showId + "/reserve", token, body);
 	}
 
+	protected ResponseEntity<JsonNode> cancel(String reservationId, String token) {
+		return post("/reservations/" + reservationId + "/cancel", token, Map.of());
+	}
+
 	protected static String newKey() {
 		return UUID.randomUUID().toString();
 	}

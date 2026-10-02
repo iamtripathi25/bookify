@@ -1,5 +1,7 @@
 package com.iamtripathi25.bookify.reservation;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -58,10 +60,7 @@ public class ReservationRepository {
 				SELECT id, show_id, user_id, seats, amount_paise, status, request_hash
 				FROM reservations WHERE user_id = :user AND idempotency_key = :key
 				""", new MapSqlParameterSource().addValue("user", userId).addValue("key", idempotencyKey),
-				(rs, i) -> new Keyed(new Reservation(rs.getObject("id", UUID.class),
-						rs.getObject("show_id", UUID.class), rs.getString("user_id"),
-						List.of((String[]) rs.getArray("seats").getArray()), rs.getLong("amount_paise"),
-						rs.getString("status")), rs.getString("request_hash")))
+				(rs, i) -> new Keyed(mapReservation(rs), rs.getString("request_hash")))
 			.stream()
 			.findFirst();
 	}
@@ -110,6 +109,53 @@ public class ReservationRepository {
 
 	private static MapSqlParameterSource seatParams(UUID showId, List<String> labels) {
 		return new MapSqlParameterSource().addValue("show", showId).addValue("labels", PgArrays.text(labels));
+	}
+
+	/** A reservation by id, only if the user owns it; optionally row-locked (cancel step 1). */
+	public Optional<Reservation> findOwned(UUID reservationId, String userId, boolean lock) {
+		return jdbc.query("""
+				SELECT id, show_id, user_id, seats, amount_paise, status
+				FROM reservations WHERE id = :id AND user_id = :user
+				""" + (lock ? " FOR UPDATE" : ""),
+				new MapSqlParameterSource().addValue("id", reservationId).addValue("user", userId),
+				(rs, i) -> mapReservation(rs))
+			.stream()
+			.findFirst();
+	}
+
+	/** Cancel step 2: returns seats to the user's quota. CHECK (held >= 0) guards against underflow. */
+	public void releaseQuota(UUID showId, String userId, int seats) {
+		jdbc.update("""
+				UPDATE user_show_counts SET held = held - :n WHERE show_id = :show AND user_id = :user
+				""", new MapSqlParameterSource().addValue("show", showId).addValue("user", userId).addValue("n", seats));
+	}
+
+	/**
+	 * Cancel step 3: locks this reservation's seats in label order (the same order reserve uses),
+	 * then frees them. Guarded by reservation_id, not by label, so a cancel can only free seats this
+	 * reservation owns and can never release a seat now confirmed to someone else.
+	 * @return the number of seats released
+	 */
+	public int releaseSeats(UUID reservationId) {
+		MapSqlParameterSource params = new MapSqlParameterSource("rid", reservationId);
+		jdbc.queryForList("SELECT label FROM seats WHERE reservation_id = :rid ORDER BY label FOR UPDATE", params,
+				String.class);
+		return jdbc.update("""
+				UPDATE seats SET status = 'available', reservation_id = NULL, user_id = NULL
+				WHERE reservation_id = :rid
+				""", params);
+	}
+
+	/** Cancel step 4. */
+	public void markCancelled(UUID reservationId) {
+		jdbc.update("UPDATE reservations SET status = 'cancelled' WHERE id = :rid",
+				new MapSqlParameterSource("rid", reservationId));
+	}
+
+	private static Reservation mapReservation(ResultSet rs) throws SQLException {
+		return new Reservation(rs.getObject("id", UUID.class), rs.getObject("show_id", UUID.class),
+				rs.getString("user_id"), List.of((String[]) rs.getArray("seats").getArray()),
+				rs.getLong("amount_paise"), rs.getString("status"));
 	}
 
 	public record Keyed(Reservation reservation, String requestHash) {

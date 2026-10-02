@@ -7,6 +7,7 @@ import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -37,6 +38,18 @@ public class ReservationController {
 			return ResponseEntity.ok().location(location(reservation)).body(reservation);
 		}
 		return ResponseEntity.created(location(reservation)).body(reservation);
+	}
+
+	/** Only the owner may cancel. Cancelling twice returns 200 with the cancelled reservation. */
+	@PostMapping("/reservations/{id}/cancel")
+	Reservation cancel(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+		return reservations.cancel(id, jwt.getSubject());
+	}
+
+	/** Only the owner may read; someone else's reservation is a 404, so ids can't be probed. */
+	@GetMapping("/reservations/{id}")
+	Reservation get(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+		return reservations.get(id, jwt.getSubject());
 	}
 
 	private static URI location(Reservation reservation) {

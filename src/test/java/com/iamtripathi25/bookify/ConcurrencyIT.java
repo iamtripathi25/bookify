@@ -2,14 +2,19 @@ package com.iamtripathi25.bookify;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.UUID;
 import java.util.function.IntFunction;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -17,6 +22,7 @@ import com.iamtripathi25.bookify.error.SeatTakenException;
 import com.iamtripathi25.bookify.reservation.Reservation;
 import com.iamtripathi25.bookify.reservation.ReservationTxService;
 import com.iamtripathi25.bookify.reservation.ReserveResult;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -35,7 +41,7 @@ class ConcurrencyIT extends ApiTestSupport {
 	@Test
 	void hotSeatHasExactlyOneWinner() throws Exception {
 		String show = createShow(List.of("A12", "A13"), 25000, 4);
-		int racers = 100;
+		int racers = 500;
 		List<String> tokens = IntStream.range(0, racers).mapToObj(i -> token("hot-" + i)).toList();
 
 		List<ResponseEntity<JsonNode>> results = race(racers,
@@ -60,18 +66,110 @@ class ConcurrencyIT extends ApiTestSupport {
 	@Test
 	void opposingMultiSeatRequestsDoNotDeadlock() throws Exception {
 		String show = createShow(List.of("A1", "A2"), 100, 4);
-		int pairs = 50;
+		int pairs = 200;
 		List<String> tokens = IntStream.range(0, pairs * 2).mapToObj(i -> token("pair-" + i)).toList();
 
 		// Half ask for [A1, A2], half for [A2, A1].
 		List<ResponseEntity<JsonNode>> results = race(pairs * 2, i -> reserve(show, tokens.get(i),
 				i % 2 == 0 ? List.of("A1", "A2") : List.of("A2", "A1"), newKey()));
 
+		// Every loser is a clean SEAT_TAKEN: no deadlock surfaced as CONTENTION or a 5xx.
 		assertThat(results.stream().filter(r -> r.getStatusCode().value() == 201)).hasSize(1);
 		results.stream()
 			.filter(r -> r.getStatusCode().value() != 201)
 			.forEach(r -> assertError(r, 409, "SEAT_TAKEN"));
 		assertInvariants(show);
+	}
+
+	@Test
+	void identityIsTokenDerivedUnderConcurrency() throws Exception {
+		String show = createShow(List.of("V1", "S1", "S2", "S3", "S4", "S5"), 100, 4);
+		String victim = token("victim");
+		String victimReservation = reserve(show, victim, List.of("V1"), newKey()).getBody()
+			.get("reservation_id")
+			.asText();
+		List<String> attackers = IntStream.range(0, 5).mapToObj(i -> token("attacker-" + i)).toList();
+
+		// 5 attackers each send a reserve with a spoofed body user_id, and 5 more try to cancel and
+		// read the victim's reservation, all at once.
+		List<ResponseEntity<JsonNode>> results = race(15, i -> {
+			String attacker = attackers.get(i % 5);
+			if (i < 5) {
+				Map<String, Object> body = new HashMap<>();
+				body.put("seats", List.of("S" + (i + 1)));
+				body.put("idempotency_key", newKey());
+				body.put("user_id", "victim");
+				return post("/shows/" + show + "/reserve", attacker, body);
+			}
+			return i < 10 ? cancel(victimReservation, attacker) : get("/reservations/" + victimReservation, attacker);
+		});
+
+		for (int i = 0; i < 5; i++) {
+			assertThat(results.get(i).getStatusCode().value()).isEqualTo(201);
+			assertThat(results.get(i).getBody().get("user_id").asText()).isEqualTo("attacker-" + i);
+		}
+		results.subList(5, 15).forEach(r -> assertError(r, 404, "NOT_FOUND"));
+		assertThat(get("/reservations/" + victimReservation, victim).getBody().get("status").asText())
+			.isEqualTo("confirmed");
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM seats WHERE show_id = ?::uuid AND user_id = 'victim'",
+				Integer.class, show)).isEqualTo(1);
+		assertInvariants(show);
+	}
+
+	/**
+	 * A small version of the on-sale stampede: many users, a few hot seats, same-key retries and key
+	 * reuse mixed together. The API's final state must reconcile exactly with the responses.
+	 */
+	@Test
+	void mixedStampedeReconcilesWithResponses() throws Exception {
+		List<String> seats = IntStream.rangeClosed(1, 100).mapToObj(i -> "P" + i).toList();
+		String show = createShow(seats, 25000, 4);
+		int users = 200;
+		List<String> tokens = IntStream.range(0, users).mapToObj(i -> token("mix-" + i)).toList();
+		List<String> keys = IntStream.range(0, users).mapToObj(i -> newKey()).toList();
+		Random random = new Random(42);
+		// Each user wants one seat: 80% aim at 5 hot seats, the rest anywhere.
+		List<String> wanted = IntStream.range(0, users)
+			.mapToObj(i -> random.nextInt(10) < 8 ? seats.get(random.nextInt(5)) : seats.get(random.nextInt(100)))
+			.toList();
+
+		// 1000 requests: each user's request is sent several times with its key (retries), and every
+		// 25th request reuses the key for a different seat.
+		int requests = 1000;
+		List<ResponseEntity<JsonNode>> results = race(requests, i -> {
+			int u = i % users;
+			String seat = i % 25 == 24 ? seats.get((seats.indexOf(wanted.get(u)) + 1) % 100) : wanted.get(u);
+			return reserve(show, tokens.get(u), List.of(seat), keys.get(u));
+		});
+
+		assertThat(statuses(results)).allMatch(s -> s == 200 || s == 201 || s == 409, "only 200, 201 or 409");
+		results.stream()
+			.filter(r -> r.getStatusCode().value() == 409)
+			.forEach(r -> assertThat(r.getBody().get("code").asText()).isIn("SEAT_TAKEN", "IDEMPOTENCY_KEY_REUSED"));
+
+		// Each 201 is one booked seat, and no seat is confirmed twice.
+		List<String> bookedSeats = results.stream()
+			.filter(r -> r.getStatusCode().value() == 201)
+			.map(r -> r.getBody().get("seats").get(0).asText())
+			.toList();
+		assertThat(bookedSeats).doesNotHaveDuplicates();
+		JsonNode state = get("/shows/" + show, tokens.get(0)).getBody();
+		assertThat(state.at("/counts/confirmed").asInt()).isEqualTo(bookedSeats.size());
+		// Every 200 replays a reservation that some 201 created.
+		Set<String> created = results.stream()
+			.filter(r -> r.getStatusCode().value() == 201)
+			.map(r -> r.getBody().get("reservation_id").asText())
+			.collect(Collectors.toSet());
+		results.stream()
+			.filter(r -> r.getStatusCode().value() == 200)
+			.forEach(r -> assertThat(created).contains(r.getBody().get("reservation_id").asText()));
+		assertInvariants(show);
+	}
+
+	/** Every show any test touched, not just the one a test asserted on. */
+	@AfterEach
+	void invariantsHoldForAllShows() {
+		jdbc.queryForList("SELECT id::text FROM shows", String.class).forEach(this::assertInvariants);
 	}
 
 	@Test
@@ -157,6 +255,70 @@ class ConcurrencyIT extends ApiTestSupport {
 		results.stream()
 			.filter(r -> r.getStatusCode().value() != 201)
 			.forEach(r -> assertError(r, 409, "PER_USER_LIMIT"));
+		assertInvariants(show);
+	}
+
+	@Test
+	void freedSeatHasExactlyOneNewWinner() throws Exception {
+		String show = createShow(List.of("A1"), 100, 4);
+		String owner = token("first-owner");
+		String key = newKey();
+		String original = reserve(show, owner, List.of("A1"), key).getBody().get("reservation_id").asText();
+		assertThat(cancel(original, owner).getStatusCode().value()).isEqualTo(200);
+
+		List<String> tokens = IntStream.range(0, 50).mapToObj(i -> token("rebook-" + i)).toList();
+		List<ResponseEntity<JsonNode>> results = race(50, i -> reserve(show, tokens.get(i), List.of("A1"), newKey()));
+
+		assertThat(results.stream().filter(r -> r.getStatusCode().value() == 201)).hasSize(1);
+		results.stream()
+			.filter(r -> r.getStatusCode().value() != 201)
+			.forEach(r -> assertError(r, 409, "SEAT_TAKEN"));
+		assertThat(get("/reservations/" + original, owner).getBody().get("status").asText()).isEqualTo("cancelled");
+		assertInvariants(show);
+	}
+
+	@Test
+	void cancelRacingRebookersNeverDoubleSells() throws Exception {
+		String show = createShow(List.of("A1"), 100, 4);
+		String owner = token("racing-owner");
+		String original = reserve(show, owner, List.of("A1"), newKey()).getBody().get("reservation_id").asText();
+		List<String> tokens = IntStream.range(0, 50).mapToObj(i -> token("racer-" + i)).toList();
+
+		// Request 0 cancels; the other 50 try to grab A1 at the same moment.
+		List<ResponseEntity<JsonNode>> results = race(51,
+				i -> i == 0 ? cancel(original, owner) : reserve(show, tokens.get(i - 1), List.of("A1"), newKey()));
+
+		assertThat(results.get(0).getStatusCode().value()).isEqualTo(200);
+		List<ResponseEntity<JsonNode>> rebooks = results.subList(1, results.size());
+		assertThat(rebooks.stream().filter(r -> r.getStatusCode().value() == 201).count()).isLessThanOrEqualTo(1);
+		rebooks.stream()
+			.filter(r -> r.getStatusCode().value() != 201)
+			.forEach(r -> assertError(r, 409, "SEAT_TAKEN"));
+		assertInvariants(show);
+	}
+
+	@Test
+	void concurrentCancelsAndRetriesMoveNothingExtra() throws Exception {
+		String show = createShow(List.of("A1", "A2"), 100, 4);
+		String owner = token("double-cancel");
+		String key = newKey();
+		String id = reserve(show, owner, List.of("A1", "A2"), key).getBody().get("reservation_id").asText();
+
+		// Ten cancels and ten same-key retries, all at once.
+		List<ResponseEntity<JsonNode>> results = race(20,
+				i -> i % 2 == 0 ? cancel(id, owner) : reserve(show, owner, List.of("A1", "A2"), key));
+
+		for (ResponseEntity<JsonNode> r : results) {
+			assertThat(r.getStatusCode().value()).as("body=%s", r.getBody()).isEqualTo(200);
+			assertThat(r.getBody().get("reservation_id").asText()).isEqualTo(id);
+		}
+		assertThat(get("/reservations/" + id, owner).getBody().get("status").asText()).isEqualTo("cancelled");
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM reservations WHERE user_id = 'double-cancel'",
+				Integer.class)).isEqualTo(1);
+		assertThat(jdbc.queryForObject(
+				"SELECT held FROM user_show_counts WHERE show_id = ?::uuid AND user_id = 'double-cancel'", Integer.class,
+				show)).isZero();
+		assertThat(get("/shows/" + show, owner).getBody().at("/counts/available").asInt()).isEqualTo(2);
 		assertInvariants(show);
 	}
 

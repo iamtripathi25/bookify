@@ -1,8 +1,10 @@
 package com.iamtripathi25.bookify.reservation;
 
 import java.util.List;
+import java.util.UUID;
 
 import com.iamtripathi25.bookify.error.IdempotencyMismatchException;
+import com.iamtripathi25.bookify.error.NotFoundException;
 import com.iamtripathi25.bookify.error.PerUserLimitException;
 import com.iamtripathi25.bookify.error.SeatTakenException;
 import com.iamtripathi25.bookify.reservation.ReservationRepository.Keyed;
@@ -64,6 +66,38 @@ public class ReservationTxService {
 			throw new SeatTakenException(labels);
 		}
 		return ReserveResult.created(reservation);
+	}
+
+	/**
+	 * Owner-only cancel, taking locks in the same global order as reserve: the reservation row, then
+	 * the user's counter, then seats by label. Cancelling twice is a no-op returning the current state.
+	 * @throws NotFoundException if the reservation doesn't exist or belongs to someone else (the two
+	 * cases are indistinguishable so ids can't be probed)
+	 */
+	@Transactional(isolation = Isolation.READ_COMMITTED)
+	public Reservation cancel(UUID reservationId, String userId) {
+		// 1: lock the reservation row. Concurrent cancels of one reservation queue here.
+		Reservation reservation = repository.findOwned(reservationId, userId, true)
+			.orElseThrow(() -> new NotFoundException("Reservation not found"));
+		if (Reservation.CANCELLED.equals(reservation.status())) {
+			return reservation;
+		}
+
+		// 2: return the seats to the user's quota.
+		repository.releaseQuota(reservation.showId(), userId, reservation.seats().size());
+
+		// 3: free exactly the seats this reservation owns.
+		int released = repository.releaseSeats(reservationId);
+		if (released != reservation.seats().size()) {
+			// A confirmed reservation always owns exactly its seats; anything else is a bug.
+			throw new IllegalStateException("Reservation " + reservationId + " owned " + released + " of "
+					+ reservation.seats().size() + " seats");
+		}
+
+		// 4: mark it cancelled.
+		repository.markCancelled(reservationId);
+		return new Reservation(reservation.id(), reservation.showId(), reservation.userId(), reservation.seats(),
+				reservation.amountPaise(), Reservation.CANCELLED);
 	}
 
 }

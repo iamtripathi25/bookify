@@ -27,10 +27,13 @@ The schema backs this up. A seat is one row keyed by `(show_id, label)`, so ther
 **Timeouts.** Each connection sets `lock_timeout = 3s` and `statement_timeout = 30s`. A lock wait past 3 seconds means heavy contention, and the request gets 409 `CONTENTION`. Pool exhaustion maps to the same code. Unexpected errors stay 500 on purpose, so bugs aren't hidden as declines.
 
 **How it's tested.** Integration tests run against real Postgres 16 over HTTP:
-- 100 users race for one seat: exactly one 201, and every loser gets 409 `SEAT_TAKEN`.
-- 100 users race with `[A1, A2]` against `[A2, A1]`: exactly one winner, no deadlock.
+- 500 users race for one seat: exactly one 201, and every loser gets 409 `SEAT_TAKEN`.
+- 200 pairs race with `[A1, A2]` against `[A2, A1]`: exactly one winner, and every loser is `SEAT_TAKEN`. No deadlock ever surfaces as `CONTENTION`.
 - Two more tests call the write transaction directly, so all 200 racers reach the row locks. One seat gets exactly one winner. Four seats requested in four different orders get exactly one winner and no deadlock.
-- After every test, the suite checks that seat counts sum to the total, every owned seat belongs to a confirmed reservation of the same user, and each user's quota count equals the seats they own.
+- A mixed stampede: 1,000 requests from 200 users, 80% aimed at five hot seats, with same-key retries and key reuse. Responses are only 200, 201 or 409; no seat appears in two 201s; the API's confirmed count equals the number of 201s; and every 200 replays a reservation some 201 created.
+- After every test, the suite checks invariants across every show in the database: seat counts sum to the total, every owned seat belongs to a confirmed reservation of the same user, and each user's quota count equals the seats they own.
+
+**Checking that the tests can fail.** I removed `FOR UPDATE` and the `status = 'available'` guard, and eight of the race tests failed, including both hot-seat tests and the stampede reconciliation. With the locking restored, the suite passed five runs in a row.
 
 ## Idempotency
 
@@ -83,7 +86,28 @@ Tested with one user firing 10 parallel single-seat requests at a limit of 4: ex
 
 ## Holds and expiry
 
-A reservation is confirmed immediately; there is no timed hold. Seats are released by an explicit `POST /reservations/{id}/cancel`, which only the reservation's owner can call. The `held` status and count are kept in the schema and the show counts so a time-boxed hold can be added later without migrating data.
+**The model: confirm on reserve, explicit cancel.** A successful reserve is `confirmed` immediately; there is no timed hold. Seats are released by `POST /reservations/{id}/cancel`, which only the owner can call. I chose this over a timed hold because it has one state path to make race-free instead of two. A timed hold needs a sweeper that expires holds while reserves and cancels are running, and a confirm step that races the sweeper.
+
+**Cancel uses the same lock order as reserve.** In one transaction:
+
+1. `SELECT ... FROM reservations WHERE id = ? AND user_id = ? FOR UPDATE`. No row is a 404, whether the reservation doesn't exist or belongs to someone else, so ids can't be probed. Already `cancelled` returns 200 with no changes.
+2. Return the seats to the user's quota: `UPDATE user_show_counts SET held = held - n`.
+3. Lock the reservation's seats in label order, then free them: `UPDATE seats SET status = 'available', reservation_id = NULL, user_id = NULL WHERE reservation_id = ?`.
+4. Mark the reservation `cancelled`.
+
+Reservation row, then user counter, then seats by label: the same order reserve uses, so a cancel and a reserve can't deadlock each other.
+
+**A release can never free someone else's seat.** Step 3 is guarded by `reservation_id`, not by seat label, so it only touches seats this reservation owns at that moment. Once a freed seat is rebooked, it carries the new reservation's id, and a stale or repeated cancel of the old reservation can't reach it. Concurrent cancels of one reservation queue on its row lock. The first does the work; the rest see `cancelled` and return it unchanged, so the quota is returned exactly once.
+
+**A cancelled booking stays cancelled.** Retrying the original reserve request with its key returns the cancelled reservation (200) and never books again, because the key still belongs to that reservation.
+
+**How it's tested.**
+- Cancel, then 50 users race for the freed seat: exactly one new winner, and the old reservation stays cancelled.
+- A cancel fired at the same instant as 50 rebook attempts: at most one winner, never a double sale.
+- Ten cancels and ten same-key retries of one reservation at once: all 200 with the same reservation, one row, and the quota back to exactly 0.
+- Sequential tests cover owner-only read and cancel, a repeat cancel as a no-op, and the quota returning after a cancel.
+
+**Adding a timed hold later.** The schema already has the `held` status and counts it in the show state. A hold would add `held_until` to reservations and a scheduled sweeper that runs this same cancel transaction for expired holds. Reserve would then also accept expired holds as available when it locks the seats.
 
 ## Health checks
 

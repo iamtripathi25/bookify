@@ -85,6 +85,8 @@ Tokens last one hour. The acting user is always the token's subject; any `user_i
 | `POST /shows` | Admin | 201 show, every seat `available` | 400, 401, 403 |
 | `GET /shows/{id}` | Any user | 200 seat statuses and counts | 400 (id not a UUID), 401, 404 |
 | `POST /shows/{id}/reserve` | Any user | 201 new reservation; **200 replay** of an earlier request with the same key | 400, 401, 404, 409 |
+| `POST /reservations/{id}/cancel` | Owner | 200 cancelled reservation; cancelling again is a no-op 200 | 400, 401, 404 |
+| `GET /reservations/{id}` | Owner | 200 reservation in its current state | 400, 401, 404 |
 | `GET /actuator/health/liveness` | None | 200 | — |
 | `GET /actuator/health/readiness` | None | 200 | 503 when the database is unreachable |
 | `GET /actuator/prometheus` | None | 200 | — |
@@ -154,6 +156,17 @@ curl -s -X POST localhost:8080/shows/$SHOW_ID/reserve \
 - **Per-user limit:** a user can hold at most the show's `per_user_limit` seats in total, across all their reservations for that show. A request that would go over is 409 `PER_USER_LIMIT`.
 - **Identity comes from the token.** A `user_id` in the body is ignored.
 - `amount_paise` is the show's price times the number of seats.
+
+### Cancel a reservation
+
+```bash
+curl -s -X POST localhost:8080/reservations/$RESERVATION_ID/cancel -H "authorization: Bearer $TOKEN"
+```
+
+Returns the reservation with `"status": "cancelled"`.
+- Only the owner can cancel or read a reservation. For anyone else it's a 404, the same as a reservation that doesn't exist.
+- Seats are freed immediately and can be booked by anyone. They also go back to the owner's per-user limit.
+- Retrying the original reserve request with its key after a cancel returns the cancelled reservation (200). It never books again; use a new key to book again.
 
 ### Errors
 

@@ -18,6 +18,7 @@ import com.iamtripathi25.bookify.db.SqlStates;
 import com.iamtripathi25.bookify.error.ContentionException;
 import com.iamtripathi25.bookify.error.IdempotencyMismatchException;
 import com.iamtripathi25.bookify.error.InvalidRequestException;
+import com.iamtripathi25.bookify.error.NotFoundException;
 import com.iamtripathi25.bookify.error.PerUserLimitException;
 import com.iamtripathi25.bookify.error.SeatTakenException;
 import com.iamtripathi25.bookify.error.UnknownSeatException;
@@ -109,7 +110,18 @@ public class ReservationFacade {
 		return withRetry(() -> tx.reserve(reservation, key, requestHash, show.perUserLimit()));
 	}
 
-	private static ReserveResult withRetry(Supplier<ReserveResult> attempt) {
+	/** Owner-only cancel; 404 for a missing reservation or someone else's. */
+	public Reservation cancel(UUID reservationId, String userId) {
+		return withRetry(() -> tx.cancel(reservationId, userId));
+	}
+
+	/** Owner-only read; 404 for a missing reservation or someone else's. */
+	public Reservation get(UUID reservationId, String userId) {
+		return repository.findOwned(reservationId, userId, false)
+			.orElseThrow(() -> new NotFoundException("Reservation not found"));
+	}
+
+	private static <T> T withRetry(Supplier<T> attempt) {
 		for (int retry = 0;; retry++) {
 			try {
 				return attempt.get();

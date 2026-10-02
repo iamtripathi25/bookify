@@ -150,6 +150,90 @@ class ReservationApiTest extends ApiTestSupport {
 	}
 
 	@Test
+	void cancelFreesTheSeatForSomeoneElse() {
+		String show = createShow(List.of("A1"), 100, 4);
+		String owner = token("u-1");
+		String id = reserve(show, owner, List.of("A1"), newKey()).getBody().get("reservation_id").asText();
+
+		ResponseEntity<JsonNode> cancelled = cancel(id, owner);
+		assertThat(cancelled.getStatusCode().value()).isEqualTo(200);
+		assertThat(cancelled.getBody().get("status").asText()).isEqualTo("cancelled");
+		assertThat(cancelled.getBody().get("reservation_id").asText()).isEqualTo(id);
+		assertThat(get("/shows/" + show, owner).getBody().at("/counts/available").asInt()).isEqualTo(1);
+		assertInvariants(show);
+
+		assertThat(reserve(show, token("u-2"), List.of("A1"), newKey()).getStatusCode().value()).isEqualTo(201);
+		assertInvariants(show);
+	}
+
+	@Test
+	void replayingTheOriginalKeyAfterCancelNeverRebooks() {
+		String show = createShow(List.of("A1"), 100, 4);
+		String owner = token("u-1");
+		String key = newKey();
+		String id = reserve(show, owner, List.of("A1"), key).getBody().get("reservation_id").asText();
+		cancel(id, owner);
+
+		ResponseEntity<JsonNode> replay = reserve(show, owner, List.of("A1"), key);
+		assertThat(replay.getStatusCode().value()).isEqualTo(200);
+		assertThat(replay.getBody().get("reservation_id").asText()).isEqualTo(id);
+		assertThat(replay.getBody().get("status").asText()).isEqualTo("cancelled");
+		assertThat(get("/shows/" + show, owner).getBody().at("/counts/available").asInt()).isEqualTo(1);
+		assertInvariants(show);
+	}
+
+	@Test
+	void cancellingTwiceIsANoOp() {
+		String show = createShow(List.of("A1", "A2"), 100, 4);
+		String owner = token("u-1");
+		String id = reserve(show, owner, List.of("A1", "A2"), newKey()).getBody().get("reservation_id").asText();
+		assertThat(cancel(id, owner).getStatusCode().value()).isEqualTo(200);
+
+		ResponseEntity<JsonNode> again = cancel(id, owner);
+		assertThat(again.getStatusCode().value()).isEqualTo(200);
+		assertThat(again.getBody().get("status").asText()).isEqualTo("cancelled");
+		assertThat(jdbc.queryForObject("SELECT held FROM user_show_counts WHERE show_id = ?::uuid AND user_id = 'u-1'",
+				Integer.class, show)).isZero();
+		assertInvariants(show);
+	}
+
+	@Test
+	void cancelReturnsQuota() {
+		String show = createShow(List.of("A1", "A2"), 100, 1);
+		String user = token("u-1");
+		String id = reserve(show, user, List.of("A1"), newKey()).getBody().get("reservation_id").asText();
+		assertError(reserve(show, user, List.of("A2"), newKey()), 409, "PER_USER_LIMIT");
+
+		cancel(id, user);
+		assertThat(reserve(show, user, List.of("A2"), newKey()).getStatusCode().value()).isEqualTo(201);
+		assertInvariants(show);
+	}
+
+	@Test
+	void onlyTheOwnerCanReadOrCancel() {
+		String show = createShow(List.of("A1"), 100, 4);
+		String owner = token("u-1");
+		String intruder = token("u-2");
+		String id = reserve(show, owner, List.of("A1"), newKey()).getBody().get("reservation_id").asText();
+
+		assertError(get("/reservations/" + id, intruder), 404, "NOT_FOUND");
+		assertError(cancel(id, intruder), 404, "NOT_FOUND");
+		assertThat(get("/shows/" + show, owner).getBody().at("/counts/confirmed").asInt()).isEqualTo(1);
+
+		ResponseEntity<JsonNode> own = get("/reservations/" + id, owner);
+		assertThat(own.getStatusCode().value()).isEqualTo(200);
+		assertThat(own.getBody().get("status").asText()).isEqualTo("confirmed");
+		assertThat(own.getBody().get("seats").toString()).isEqualTo("[\"A1\"]");
+
+		String missing = "00000000-0000-0000-0000-000000000000";
+		assertError(get("/reservations/" + missing, owner), 404, "NOT_FOUND");
+		assertError(cancel(missing, owner), 404, "NOT_FOUND");
+		assertError(get("/reservations/not-a-uuid", owner), 400, "INVALID_REQUEST");
+		assertError(cancel(id, null), 401, "UNAUTHORIZED");
+		assertInvariants(show);
+	}
+
+	@Test
 	void invalidReservationsAre4xx() {
 		String show = createShow(List.of("A1"), 100, 4);
 		String user = token("u-1");
