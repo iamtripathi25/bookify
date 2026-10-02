@@ -1,0 +1,56 @@
+spring:
+  application:
+    name: bookify
+  threads:
+    virtual:
+      # Requests waiting for a DB connection park cheaply instead of holding platform threads.
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/bookify}
+    username: ${DB_USER:bookify}
+    password: ${DB_PASSWORD:bookify}
+    hikari:
+      # Below Postgres max_connections (100) minus admin headroom and the 2-connection health pool.
+      maximum-pool-size: 30
+      minimum-idle: 30
+      # The 30s default throws SQLTransientConnectionException under the burst; queue instead.
+      connection-timeout: 60000
+  sql:
+    init:
+      # Spring skips schema.sql on non-embedded databases unless told otherwise.
+      mode: always
+
+server:
+  tomcat:
+    # The default of 8192 refuses part of a 20k burst.
+    max-connections: 20000
+    # Backlog for connection spikes.
+    accept-count: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          # "db" is our own indicator on the small health pool (see HealthDbPool),
+          # so readiness never queues behind the burst.
+          include: readinessState,db
+  health:
+    # Replaced by DbHealthIndicator; the built-in one would use the main pool.
+    db:
+      enabled: false
+
+bookify:
+  dev-auth:
+    enabled: ${BOOKIFY_DEV_AUTH_ENABLED:false}
+  jwt:
+    secret: ${BOOKIFY_JWT_SECRET:}
+  health-db:
+    # Fail closed fast: readiness returns 503 within ~2s when Postgres is unreachable.
+    timeout-seconds: 2

@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16
+    command: ["postgres", "-c", "max_connections=100"]
+    environment:
+      POSTGRES_DB: bookify
+      POSTGRES_USER: ${DB_USER:-bookify}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-bookify}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d bookify"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+    environment:
+      DB_URL: ${DB_URL:-jdbc:postgresql://postgres:5432/bookify}
+      DB_USER: ${DB_USER:-bookify}
+      DB_PASSWORD: ${DB_PASSWORD:-bookify}
+      BOOKIFY_JWT_SECRET: ${BOOKIFY_JWT_SECRET:-local-dev-secret-not-for-production-0123456789}
+      BOOKIFY_DEV_AUTH_ENABLED: ${BOOKIFY_DEV_AUTH_ENABLED:-true}
+      JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - app
+    ports:
+      - "8080:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+
+volumes:
+  pgdata:

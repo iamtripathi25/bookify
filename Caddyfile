@@ -1,0 +1,10 @@
+# Local edge only; on Railway the platform edge terminates HTTPS.
+:80 {
+	reverse_proxy app:8080 {
+		transport http {
+			# The edge must not cut requests that are queued for a DB connection.
+			read_timeout 120s
+			write_timeout 120s
+		}
+	}
+}
