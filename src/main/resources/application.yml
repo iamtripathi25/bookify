@@ -15,6 +15,15 @@ spring:
       minimum-idle: 30
       # The 30s default throws SQLTransientConnectionException under the burst; queue instead.
       connection-timeout: 60000
+      # Per connection rather than ALTER ROLE (managed Postgres may not allow it).
+      # A lock wait past 3s means contention -> 409; statement_timeout stays above it.
+      connection-init-sql: SET lock_timeout = '3s'; SET statement_timeout = '30s'
+  jackson:
+    # The API speaks snake_case (price_paise, reservation_id, ...).
+    property-naming-strategy: SNAKE_CASE
+    deserialization:
+      # Unknown fields (e.g. a spoofed user_id) are ignored, never bound.
+      fail-on-unknown-properties: false
   sql:
     init:
       # Spring skips schema.sql on non-embedded databases unless told otherwise.
@@ -48,9 +57,18 @@ management:
 
 bookify:
   dev-auth:
+    # Secure by default: POST /auth/token only exists when explicitly enabled.
     enabled: ${BOOKIFY_DEV_AUTH_ENABLED:false}
+    # Required (X-Admin-Key header) to mint ADMIN tokens. Blank disables admin minting.
+    admin-key: ${BOOKIFY_ADMIN_KEY:}
   jwt:
+    # HS256 key, at least 32 bytes; startup fails otherwise.
     secret: ${BOOKIFY_JWT_SECRET:}
+    # Both are set on minted tokens and validated on every request.
+    issuer: bookify
+    audience: bookify-api
+    # Long enough for a burst run, short enough to limit a leaked token.
+    token-ttl: 1h
   health-db:
     # Fail closed fast: readiness returns 503 within ~2s when Postgres is unreachable.
     timeout-seconds: 2

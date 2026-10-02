@@ -28,6 +28,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-bookify}
       BOOKIFY_JWT_SECRET: ${BOOKIFY_JWT_SECRET:-local-dev-secret-not-for-production-0123456789}
       BOOKIFY_DEV_AUTH_ENABLED: ${BOOKIFY_DEV_AUTH_ENABLED:-true}
+      BOOKIFY_ADMIN_KEY: ${BOOKIFY_ADMIN_KEY:-local-dev-admin-key}
       JAVA_OPTS: "-Xms512m -Xmx512m"
     ulimits:
       nofile: { soft: 65535, hard: 65535 }
