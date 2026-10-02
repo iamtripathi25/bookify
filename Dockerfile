@@ -1,11 +1,11 @@
-# syntax=docker/dockerfile:1.7
-
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /src
+# Dependencies get their own layer, so they're downloaded again only when pom.xml changes.
+# (No BuildKit cache mounts: Railway's builder requires service-specific mount ids.)
 COPY pom.xml .
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline
+RUN mvn -B -q dependency:go-offline
 COPY src ./src
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q -DskipTests package \
+RUN mvn -B -q -DskipTests package \
  && cp target/bookify-*.jar /src/app.jar
 
 FROM eclipse-temurin:21-jre
