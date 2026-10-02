@@ -2,14 +2,17 @@ package com.iamtripathi25.bookify.error;
 
 import java.util.stream.Collectors;
 
+import com.iamtripathi25.bookify.db.SqlStates;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.lang.Nullable;
+import org.springframework.transaction.TransactionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -31,6 +34,19 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	@ExceptionHandler(ApiException.class)
 	ResponseEntity<ErrorBody> handleApi(ApiException ex) {
 		return ResponseEntity.status(ex.status()).body(ErrorBody.of(ex.code(), ex.getMessage(), ex.seats()));
+	}
+
+	/**
+	 * Lock/statement timeouts, deadlocks after retries and pool exhaustion are contention, not bugs.
+	 * Any other database failure stays a 500.
+	 */
+	@ExceptionHandler({ DataAccessException.class, TransactionException.class })
+	ResponseEntity<ErrorBody> handleDataAccess(RuntimeException ex) {
+		if (SqlStates.isContention(ex)) {
+			log.warn("Contention: {} (sqlstate={})", ex.getClass().getSimpleName(), SqlStates.sqlState(ex));
+			return handleApi(new ContentionException());
+		}
+		return handleUnexpected(ex);
 	}
 
 	/** Deliberately a 500: hiding bugs as 4xx would corrupt the outcome counts. */

@@ -44,5 +44,33 @@ services:
     ulimits:
       nofile: { soft: 65535, hard: 65535 }
 
+  # Optional metrics stack: docker compose --profile observability up
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["observability"]
+    depends_on:
+      - app
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    profiles: ["observability"]
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      # Local only: open the dashboard without logging in.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/bookify.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
 volumes:
   pgdata:

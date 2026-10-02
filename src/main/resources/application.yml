@@ -10,6 +10,8 @@ spring:
     username: ${DB_USER:bookify}
     password: ${DB_PASSWORD:bookify}
     hikari:
+      # Names the pool in metrics (hikaricp_*{pool="main"}).
+      pool-name: main
       # Below Postgres max_connections (100) minus admin headroom and the 2-connection health pool.
       maximum-pool-size: 30
       minimum-idle: 30
@@ -50,6 +52,12 @@ management:
           # "db" is our own indicator on the small health pool (see HealthDbPool),
           # so readiness never queues behind the burst.
           include: readinessState,db
+  metrics:
+    distribution:
+      # Real histogram buckets, so Prometheus can compute p50/p95/p99 across instances.
+      percentiles-histogram:
+        http.server.requests: true
+        hikaricp.connections.acquire: true
   health:
     # Replaced by DbHealthIndicator; the built-in one would use the main pool.
     db:

@@ -1,5 +1,34 @@
 # Bookify — Write-up
 
+## The atomic decision
+
+Postgres decides who gets a seat, inside one READ COMMITTED transaction. Nothing is decided in application memory, so any number of app instances can run behind a load balancer.
+
+**The mechanism.** For a request for seats `S`, the transaction:
+
+1. Inserts the reservation row.
+2. Locks the seats: `SELECT label, status FROM seats WHERE show_id = ? AND label = ANY(S) ORDER BY label FOR UPDATE`.
+3. Declines (rolls back) if any locked seat is not `available`.
+4. Runs a guarded write, `UPDATE seats SET status = 'confirmed', reservation_id = ?, user_id = ? WHERE show_id = ? AND label = ANY(S) AND status = 'available'`, and declines if fewer than `|S|` rows changed.
+
+**Why it's race-free.** When 500 transactions want seat A12, they queue on A12's row lock. The first commits `confirmed`. Under READ COMMITTED, each waiter's `FOR UPDATE` then returns the latest committed version of the row, sees `confirmed`, and rolls back with 409 `SEAT_TAKEN`. There is no window between checking and taking a seat, because both happen while holding the row lock. The `status = 'available'` guard on the `UPDATE` is defence in depth: even without the lock, a second writer could not overwrite a confirmed seat.
+
+The schema backs this up. A seat is one row keyed by `(show_id, label)`, so there is no second copy to sell. A `CHECK` ties `status = 'available'` to `reservation_id IS NULL`, so a seat can't be both owned and available. Every seat has exactly one status, so `available + held + confirmed == total_seats` holds by construction.
+
+**Multi-seat requests and deadlock.** Every transaction locks seats in ascending label order. Postgres takes `FOR UPDATE` locks as the sorted rows are produced, so `[A13, A12]` and `[A12, A13]` both lock A12 first. The second waits on A12 rather than holding A13, so a cycle can't form. As a safety net, a deadlock (`40P01`) or serialization failure (`40001`) is retried up to three times in a fresh transaction, with 10–50ms of random delay. If it still fails, the response is 409 `CONTENTION`, never a 5xx.
+
+**Partial requests are all-or-nothing.** If any seat is unavailable, the whole transaction rolls back and the response lists the unavailable seats.
+
+**A cheap pre-check keeps the pool free.** Before opening the write transaction, the service reads the requested seats without locking. If any is already gone, it declines straight away. During a hot-seat storm, almost every loser is turned away after one short read and never waits for a row lock. The pre-check only ever declines; the decision to sell is always made under the lock.
+
+**Timeouts.** Each connection sets `lock_timeout = 3s` and `statement_timeout = 30s`. A lock wait past 3 seconds means heavy contention, and the request gets 409 `CONTENTION`. Pool exhaustion maps to the same code. Unexpected errors stay 500 on purpose, so bugs aren't hidden as declines.
+
+**How it's tested.** Integration tests run against real Postgres 16 over HTTP:
+- 100 users race for one seat: exactly one 201, and every loser gets 409 `SEAT_TAKEN`.
+- 100 users race with `[A1, A2]` against `[A2, A1]`: exactly one winner, no deadlock.
+- Two more tests call the write transaction directly, so all 200 racers reach the row locks. One seat gets exactly one winner. Four seats requested in four different orders get exactly one winner and no deadlock.
+- After every test, the suite checks that seat counts sum to the total and every owned seat belongs to a confirmed reservation of the same user.
+
 ## Holds and expiry
 
 A reservation is confirmed immediately; there is no timed hold. Seats are released by an explicit `POST /reservations/{id}/cancel`, which only the reservation's owner can call. The `held` status and count are kept in the schema and the show counts so a time-boxed hold can be added later without migrating data.
@@ -38,3 +67,4 @@ I used Claude Code (Claude Opus) throughout. The split:
 - A `seat_no` column, so seats display in creation order (`A1, A2, A10`) rather than alphabetical order.
 - `logstash-logback-encoder` 8.1 rather than 9.0, because 9.0 needs Jackson 3.
 - Plain HTTP on local Caddy instead of HTTPS, because Java's HTTP client rejects Caddy's self-signed certificate.
+- Race tests that call the write transaction directly, not just over HTTP. Over HTTP, the pre-check turns most losers away before they reach the row locks, so the HTTP tests alone would barely exercise the locking.

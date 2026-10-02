@@ -8,9 +8,6 @@ import java.util.Map;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -20,19 +17,10 @@ import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
-import org.springframework.test.context.ActiveProfiles;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@Import(TestcontainersConfiguration.class)
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class AuthTokenTest {
-
-	static final String ADMIN_KEY = "test-admin-key-0123456789";
-
-	@Autowired
-	TestRestTemplate http;
+class AuthTokenTest extends ApiTestSupport {
 
 	/** Signs with the real key, so only the claims under test differ from a minted token. */
 	@Autowired
@@ -97,15 +85,11 @@ class AuthTokenTest {
 	}
 
 	private ResponseEntity<JsonNode> getShow(String token) {
-		HttpHeaders headers = new HttpHeaders();
-		headers.setBearerAuth(token);
-		return http.exchange("/shows/00000000-0000-0000-0000-000000000000", HttpMethod.GET,
-				new HttpEntity<>(headers), JsonNode.class);
+		return get("/shows/00000000-0000-0000-0000-000000000000", token);
 	}
 
 	private static void assertForbidden(ResponseEntity<JsonNode> res) {
-		assertThat(res.getStatusCode().value()).isEqualTo(403);
-		assertThat(res.getBody().get("code").asText()).isEqualTo("FORBIDDEN");
+		assertError(res, 403, "FORBIDDEN");
 	}
 
 }
